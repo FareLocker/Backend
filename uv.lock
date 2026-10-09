@@ -216,6 +216,7 @@ dependencies = [
     { name = "alembic" },
     { name = "fastapi", extra = ["standard"] },
     { name = "psycopg2-binary" },
+    { name = "pydantic" },
     { name = "sqlalchemy", extra = ["asyncio"] },
 ]
 
@@ -224,6 +225,7 @@ requires-dist = [
     { name = "alembic", specifier = ">=1.20.0" },
     { name = "fastapi", extras = ["standard"], specifier = ">=0.143.0" },
     { name = "psycopg2-binary", specifier = ">=2.9.13" },
+    { name = "pydantic", specifier = ">=2.14.0" },
     { name = "sqlalchemy", extras = ["asyncio"], specifier = ">=2.1.4" },
 ]
 
