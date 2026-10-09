@@ -1,7 +1,12 @@
 [project]
 name = "farelocker"
 version = "0.1.0"
-description = "Add your description here"
+description = "Hacklanta 2026 - FareLocker API"
 readme = "README.md"
 requires-python = ">=3.14"
-dependencies = []
+dependencies = [
+    "alembic>=1.20.0",
+    "fastapi[standard]>=0.143.0",
+    "psycopg2-binary>=2.9.13",
+    "sqlalchemy[asyncio]>=2.1.4",
+]
