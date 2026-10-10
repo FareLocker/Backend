@@ -19,13 +19,13 @@ from app.schemas import (
     LockPurchaseResponse,
     LockResponse,
     NaturalFareLockQuoteRequest,
+    LockMarkToMarketResponse,
 )
 from app.services.locks import (
     ORIGIN_TIMEZONES,
     _compute_payout_dollars,
     _credit_payout,
-    _provider_fare,
-    _stored_fare,
+    _resolve_current_fare,
 )
 from app.services.natural_search import SearchParseError, parse_natural_farelock_quote
 from app.services.pricer import PAYOUT_CAP
@@ -173,6 +173,69 @@ def purchase_farelock_natural(
     return _to_purchase_response(lock, row)
 
 
+def _exercisable_now(lock: Lock, *, now: datetime | None = None) -> bool:
+    if lock.status != "open":
+        return False
+    origin = lock.route.split("-")[0]
+    when = now or datetime.now(UTC)
+    local_today = when.astimezone(ZoneInfo(ORIGIN_TIMEZONES.get(origin, "UTC"))).date()
+    return local_today < lock.departure_date
+
+
+def _mark_to_market(lock: Lock, db: Session) -> LockMarkToMarketResponse:
+    strike_cents = round(lock.K * 100)
+    max_payout_cents = round(PAYOUT_CAP * lock.K * 100)
+    exercisable = _exercisable_now(lock)
+
+    fare, source = _resolve_current_fare(lock, db)
+    if fare is None:
+        return LockMarkToMarketResponse(
+            id=lock.id,
+            status=lock.status,
+            strike_cents=strike_cents,
+            current_fare_cents=None,
+            intrinsic_payout_cents=None,
+            max_payout_cents=max_payout_cents,
+            in_the_money=None,
+            exercisable=exercisable,
+            fare_source=None,
+        )
+
+    fare_cents = round(fare * 100)
+    payout = _compute_payout_dollars(lock.K, fare)
+    payout_cents = round(payout * 100)
+    return LockMarkToMarketResponse(
+        id=lock.id,
+        status=lock.status,
+        strike_cents=strike_cents,
+        current_fare_cents=fare_cents,
+        intrinsic_payout_cents=payout_cents,
+        max_payout_cents=max_payout_cents,
+        in_the_money=fare_cents < strike_cents,
+        exercisable=exercisable,
+        fare_source=source,
+    )
+
+
+@router.get("/{lock_id}/mark-to-market", response_model=LockMarkToMarketResponse)
+def mark_lock_to_market(
+    lock_id: int, user: CurrentUser, db: DbSession
+) -> LockMarkToMarketResponse:
+    lock = db.get(Lock, lock_id)
+    if lock is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Lock not found"
+        )
+
+    if lock.user_id != user.id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Cannot access another user's lock",
+        )
+
+    return _mark_to_market(lock, db)
+
+
 def _early_exercise_lock(
     *,
     lock_id: int,
@@ -198,27 +261,15 @@ def _early_exercise_lock(
             status=lock.status,
         )
 
-    origin = lock.route.split("-")[0]
     now = datetime.now(UTC)
-    local_today = now.astimezone(ZoneInfo(ORIGIN_TIMEZONES.get(origin, "UTC"))).date()
-    if local_today >= lock.departure_date:
+    if not _exercisable_now(lock, now=now):
         raise _lock_error(
             "past_exercise_window",
             "Early exercise is only available before the departure date.",
             departure_date=lock.departure_date.isoformat(),
         )
 
-    try:
-        settle_fare = _provider_fare(lock)
-    except Exception as error:
-        raise HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY,
-            detail="Could not fetch current fare for this lock",
-        ) from error
-
-    if settle_fare is None:
-        settle_fare = _stored_fare(lock, db)
-
+    settle_fare, _source = _resolve_current_fare(lock, db)
     if settle_fare is None:
         raise _lock_error(
             "fare_unavailable",
