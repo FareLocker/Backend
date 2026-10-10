@@ -548,7 +548,7 @@ dev = [
 [[package]]
 name = "fast-flights"
 version = "3.1.0"
-source = { git = "https://github.com/StephenSulimani/flights.git?rev=dev#72ae27e88ad03231ab88432c9276d2bb00935b2a" }
+source = { git = "https://github.com/StephenSulimani/flights.git?rev=dev#6b699ce1feaf16fa96e42e14df1af6ecc3b8f358" }
 dependencies = [
     { name = "build" },
     { name = "primp" },
