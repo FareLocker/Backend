@@ -4,9 +4,11 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.routers.search import router as search_router
+from app import db
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
+    db.init_db()
     yield
 
 

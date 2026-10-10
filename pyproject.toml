@@ -3,13 +3,16 @@ name = "farelocker"
 version = "0.1.0"
 description = "Hacklanta 2026 - FareLocker API"
 readme = "README.md"
-requires-python = ">=3.14"
+requires-python = ">=3.12"
 dependencies = [
     "alembic>=1.20.0",
     "fast-flights @ git+https://github.com/StephenSulimani/flights.git@549bfd2",
     "fastapi[standard]>=0.143.0",
+    "numpy>=2.5.3",
+    "pandas>=3.0.6",
     "psycopg2-binary>=2.9.13",
     "pydantic>=2.14.0",
+    "pydantic-settings>=2.15.0",
     "sqlalchemy[asyncio]>=2.1.4",
 ]
 

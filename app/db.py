@@ -1,46 +1,20 @@
-"""SQLAlchemy engine and request-scoped session management."""
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
+from app.config import settings
 
-from collections.abc import Generator
-from typing import Any
-
-from sqlalchemy import create_engine, event
-from sqlalchemy.engine import Engine
-from sqlalchemy.orm import Session, sessionmaker
-
-from app.config import get_settings
+engine = create_engine(settings.database_url, pool_pre_ping=True)
+SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False)
 
 
-def _build_engine() -> Engine:
-    settings = get_settings()
-    connect_args = (
-        {"check_same_thread": False}
-        if settings.database_url.startswith("sqlite")
-        else {}
-    )
-    return create_engine(
-        settings.database_url,
-        echo=settings.sql_echo,
-        pool_pre_ping=True,
-        connect_args=connect_args,
-    )
+def get_db():
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
 
 
-engine = _build_engine()
+def init_db() -> None:
+    from app.models import Base
 
-
-if engine.dialect.name == "sqlite":
-    @event.listens_for(engine, "connect")
-    def _enable_sqlite_foreign_keys(dbapi_connection: Any, _connection_record: Any) -> None:
-        cursor = dbapi_connection.cursor()
-        cursor.execute("PRAGMA foreign_keys=ON")
-        cursor.close()
-
-
-SessionLocal = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False)
-
-
-def get_db() -> Generator[Session, None, None]:
-    """Provide one database session per FastAPI request."""
-
-    with SessionLocal() as session:
-        yield session
+    Base.metadata.create_all(bind=engine)

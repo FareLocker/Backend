@@ -1,25 +1,17 @@
-"""Application configuration loaded from environment variables."""
-
-from dataclasses import dataclass
-from functools import lru_cache
-import os
+from pydantic_settings import BaseSettings
 
 
-@dataclass(frozen=True, slots=True)
-class Settings:
-    """Runtime settings with local-development defaults."""
+class Settings(BaseSettings):
+    database_url: str = "postgresql+psycopg2://localhost/farelocker"
 
-    database_url: str
-    sql_echo: bool
+    # pricing economics
+    base_lambda: float = 0.30  # inventory loading
+    vol_prior: float = 0.35  # vol shrinkage prior
+
+    # scheduler cadence
+    refit_interval_minutes: int = 60
+
+    model_config = {"env_file": ".env", "extra": "ignore"}
 
 
-def _as_bool(value: str | None) -> bool:
-    return value is not None and value.strip().lower() in {"1", "true", "yes", "on"}
-
-
-@lru_cache
-def get_settings() -> Settings:
-    return Settings(
-        database_url=os.getenv("DATABASE_URL", "sqlite:///./farelocker.db"),
-        sql_echo=_as_bool(os.getenv("SQL_ECHO")),
-    )
+settings = Settings()
