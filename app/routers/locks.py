@@ -125,7 +125,7 @@ def _to_purchase_response(lock: Lock, user: User) -> LockPurchaseResponse:
     )
 
 
-@router.post("farelock/purchase", response_model=LockPurchaseResponse)
+@router.post("/farelock/purchase", response_model=LockPurchaseResponse)
 def purchase_farelock_structured(
     request: FareLockPriceRequest, user: CurrentUser, db: DbSession
 ) -> LockPurchaseResponse:
