@@ -32,6 +32,7 @@ class FareHistoryPoint(BaseModel):
 class FareDetailResponse(BaseModel):
     fare: "FareSearchResultResponse"
     history: list[FareHistoryPoint]
+    history_source: Literal["google", "local"]
 
 
 class FareEndpointResponse(BaseModel):
