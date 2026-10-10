@@ -1,8 +1,8 @@
 """Authenticated wallet endpoints."""
 
-from typing import Annotated
+from typing import Annotated, Literal
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -81,17 +81,28 @@ def add_wallet_funds(
     )
 
 
+EntryType = Literal["recharge", "lock_fee", "payout", "withdrawal"]
+
+
 @router.get("/{user_id}/wallet/transactions", response_model=WalletTransactionResponse)
 def get_wallet_transactions(
-    user_id: int, user: CurrentUser, db: DbSession
+    user_id: int,
+    user: CurrentUser,
+    db: DbSession,
+    entry_type: EntryType | None = Query(default=None),
 ) -> WalletTransactionResponse:
     _require_self(user_id, user)
 
-    rows = db.scalars(
+    stmt = (
         select(LedgerEntry)
         .where(LedgerEntry.user_id == user.id)
         .order_by(LedgerEntry.created_at.desc(), LedgerEntry.id.desc())
-    ).all()
+    )
+
+    if entry_type is not None:
+        stmt = stmt.where(LedgerEntry.entry_type == entry_type)
+
+    rows = db.scalars(stmt).all()
 
     return WalletTransactionResponse(
         user_id=user.id,
