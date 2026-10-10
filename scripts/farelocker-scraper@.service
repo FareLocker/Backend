@@ -1,0 +1,22 @@
+# FareLocker fare scraper -- systemd unit for a VPS.
+# sudo cp scripts/farelocker-scraper.service /etc/systemd/system/
+# sudo systemctl daemon-reload
+# sudo systemctl enable --now farelocker-scraper
+
+[Unit]
+Description=FareLocker fare scraper (tiered polling -> single CSV)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+EnvironmentFile=-/etc/farelocker/scraper.env
+User=%i
+ExecStart=/bin/bash -c 'exec "$$FARELOCKER_ROOT/scripts/run_scraper.sh"'
+Restart=always
+RestartSec=30
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
