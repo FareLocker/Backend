@@ -2,14 +2,17 @@ from datetime import UTC, date, datetime
 
 from sqlalchemy import (
     JSON,
+    Boolean,
     Date,
     DateTime,
     Float,
+    ForeignKey,
     Index,
     Integer,
     String,
     Text,
     UniqueConstraint,
+    func,
 )
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
@@ -77,6 +80,7 @@ class Lock(Base):
     __tablename__ = "locks"
 
     id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
     route: Mapped[str] = mapped_column(String(7), index=True)
     flight_no: Mapped[str | None] = mapped_column(String(10))
     departure_date: Mapped[date] = mapped_column(Date, index=True)
@@ -95,15 +99,6 @@ class Lock(Base):
     payout: Mapped[float | None] = mapped_column(Float)
 
 
-class Wallet(Base):
-    __tablename__ = "wallets"
-
-    # Supabase auth user IDs own wallet balances. Amounts are stored as integer
-    # cents so balance arithmetic does not accumulate floating point errors.
-    user_id: Mapped[str] = mapped_column(String(64), primary_key=True)
-    balance_cents: Mapped[int] = mapped_column(Integer, default=0)
-
-
 class FareSnapshot(Base):
     """Latest normalized live itinerary, retained for the detail page."""
 
@@ -114,3 +109,31 @@ class FareSnapshot(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=lambda: datetime.now(UTC)
     )
+
+
+class LedgerEntry(Base):
+    __tablename__ = "ledger_entries"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
+    amount_cents: Mapped[int] = mapped_column(Integer)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    entry_type: Mapped[str] = mapped_column(String(30))  # recharge | lock_fee | payout
+    note: Mapped[str | None] = mapped_column(Text)
+    lock_id: Mapped[int | None] = mapped_column(
+        ForeignKey("locks.id"), nullable=True, index=True
+    )
+
+
+class User(Base):
+    __tablename__ = "users"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    first_name: Mapped[str] = mapped_column(String(50))
+    last_name: Mapped[str] = mapped_column(String(50))
+    email: Mapped[str] = mapped_column(String(100), unique=True)
+    phone_number: Mapped[str | None] = mapped_column(String(20), unique=True)
+    hashed_password: Mapped[str] = mapped_column(String(100))
+    is_admin: Mapped[bool] = mapped_column(Boolean, default=False)
+    balance_cents: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
