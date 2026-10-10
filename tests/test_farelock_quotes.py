@@ -48,6 +48,18 @@ def test_parses_city_names_for_farelock_quote() -> None:
     assert parsed.fare_paid == 200.0
 
 
+def test_parses_mixed_city_and_airport_code_for_farelock_quote() -> None:
+    parsed = parse_natural_farelock_quote(
+        "I booked from Atlanta to LAX next Friday for $284, how much is FareLock?",
+        reference_date=REFERENCE_DATE,
+    )
+
+    assert parsed.origin == "ATL"
+    assert parsed.destination == "LAX"
+    assert parsed.departure_date == date(2026, 10, 16)
+    assert parsed.fare_paid == 284.0
+
+
 def test_city_quote_with_fare_asks_only_for_missing_date() -> None:
     with pytest.raises(SearchParseError) as caught:
         parse_natural_farelock_quote(
@@ -120,3 +132,35 @@ def test_farelock_endpoint_enforces_quote_window() -> None:
 
     assert caught.value.status_code == 422
     assert caught.value.detail["code"] == "outside_quote_window"
+
+
+def test_farelock_endpoint_explains_missing_pricing_data(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    departure = date.today() + timedelta(days=10)
+    monkeypatch.setattr(
+        quotes,
+        "quote_lock",
+        MagicMock(side_effect=ValueError("no curve fit for ATL-LAX")),
+    )
+
+    with pytest.raises(HTTPException) as caught:
+        quotes.farelock_quote(
+            NaturalFareLockQuoteRequest(
+                query=f"I booked ATL to LAX on {departure.isoformat()} for $420"
+            ),
+            MagicMock(),
+        )
+
+    assert caught.value.status_code == 422
+    assert caught.value.detail == {
+        "code": "pricing_unavailable",
+        "message": (
+            "I can’t quote FareLock for ATL to LAX yet because we don’t have enough "
+            "historical fare data to calculate a reliable fee. Try another supported "
+            "route or check back after more fares have been collected."
+        ),
+        "route": "ATL-LAX",
+        "reason": "historical_fare_data_unavailable",
+        "minimum_observations": 30,
+    }

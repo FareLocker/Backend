@@ -41,25 +41,16 @@ _CITY_NAME = "(?:" + "|".join(
         reverse=True,
     )
 ) + ")"
+_LOCATION = rf"(?:{_CITY_NAME}|[A-Za-z]{{3}})"
 _ROUTE_PATTERNS = (
     re.compile(
-        rf"\bfrom\s+(?P<origin>{_CITY_NAME})\s*(?:to|->|→)\s*"
-        rf"(?P<destination>{_CITY_NAME})\b",
+        rf"\bfrom\s+(?P<origin>{_LOCATION})\s*(?:to|->|→)\s*"
+        rf"(?P<destination>{_LOCATION})\b",
         re.IGNORECASE,
     ),
     re.compile(
-        rf"\b(?P<origin>{_CITY_NAME})\s*(?:to|->|→)\s*"
-        rf"(?P<destination>{_CITY_NAME})\b",
-        re.IGNORECASE,
-    ),
-    re.compile(
-        r"\bfrom\s+(?P<origin>[A-Za-z]{3})\s*(?:to|->|→)\s*"
-        r"(?P<destination>[A-Za-z]{3})\b",
-        re.IGNORECASE,
-    ),
-    re.compile(
-        r"\b(?P<origin>[A-Za-z]{3})\s*(?:to|->|→)\s*"
-        r"(?P<destination>[A-Za-z]{3})\b",
+        rf"\b(?P<origin>{_LOCATION})\s*(?:to|->|→)\s*"
+        rf"(?P<destination>{_LOCATION})\b",
         re.IGNORECASE,
     ),
 )

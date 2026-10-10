@@ -16,8 +16,11 @@ DbSession = Annotated[Session, Depends(get_db)]
 MAX_QUOTE_DAYS = 30
 
 
-def _quote_error(code: str, message: str) -> HTTPException:
-    return HTTPException(status_code=422, detail={"code": code, "message": message})
+def _quote_error(code: str, message: str, **context: object) -> HTTPException:
+    return HTTPException(
+        status_code=422,
+        detail={"code": code, "message": message, **context},
+    )
 
 
 @router.post("/farelock", response_model=FareLockQuoteResponse)
@@ -63,7 +66,14 @@ def farelock_quote(
         if message.startswith("no curve fit"):
             raise _quote_error(
                 "pricing_unavailable",
-                f"FareLock pricing data is not available for {parsed.origin} to {parsed.destination} yet.",
+                (
+                    f"I can’t quote FareLock for {parsed.origin} to {parsed.destination} yet "
+                    "because we don’t have enough historical fare data to calculate a reliable fee. "
+                    "Try another supported route or check back after more fares have been collected."
+                ),
+                route=f"{parsed.origin}-{parsed.destination}",
+                reason="historical_fare_data_unavailable",
+                minimum_observations=30,
             ) from error
         raise _quote_error("pricing_failed", "FareLock could not price this request.") from error
 
