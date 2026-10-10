@@ -25,6 +25,8 @@ from app.services.locks import (
     ORIGIN_TIMEZONES,
     _compute_payout_dollars,
     _credit_payout,
+    _provider_fare,
+    _stored_fare,
     _resolve_current_fare,
 )
 from app.services.natural_search import SearchParseError, parse_natural_farelock_quote
@@ -187,6 +189,21 @@ def _mark_to_market(lock: Lock, db: Session) -> LockMarkToMarketResponse:
     max_payout_cents = round(PAYOUT_CAP * lock.K * 100)
     exercisable = _exercisable_now(lock)
 
+    if lock.status != "open":
+        fare_cents = None if lock.settle_fare is None else round(lock.settle_fare * 100)
+        payout_cents = None if lock.payout is None else round(lock.payout * 100)
+        return LockMarkToMarketResponse(
+            id=lock.id,
+            status=lock.status,
+            strike_cents=strike_cents,
+            current_fare_cents=fare_cents,
+            intrinsic_payout_cents=payout_cents,
+            max_payout_cents=max_payout_cents,
+            in_the_money=(None if fare_cents is None else fare_cents < strike_cents),
+            exercisable=False,
+            fare_source=None,
+        )
+
     fare, source = _resolve_current_fare(lock, db)
     if fare is None:
         return LockMarkToMarketResponse(
@@ -261,15 +278,27 @@ def _early_exercise_lock(
             status=lock.status,
         )
 
+    origin = lock.route.split("-")[0]
     now = datetime.now(UTC)
-    if not _exercisable_now(lock, now=now):
+    local_today = now.astimezone(ZoneInfo(ORIGIN_TIMEZONES.get(origin, "UTC"))).date()
+    if local_today >= lock.departure_date:
         raise _lock_error(
             "past_exercise_window",
             "Early exercise is only available before the departure date.",
             departure_date=lock.departure_date.isoformat(),
         )
 
-    settle_fare, _source = _resolve_current_fare(lock, db)
+    try:
+        settle_fare = _provider_fare(lock)
+    except Exception as error:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="Could not fetch current fare for this lock",
+        ) from error
+
+    if settle_fare is None:
+        settle_fare = _stored_fare(lock, db)
+
     if settle_fare is None:
         raise _lock_error(
             "fare_unavailable",
