@@ -15,6 +15,7 @@ from app.schemas import (
     WalletAddFundsResponse,
     WalletResponse,
     WalletTransactionResponse,
+    WalletWithdrawResponse,
 )
 
 router = APIRouter(prefix="/users", tags=["wallet"])
@@ -38,6 +39,51 @@ def get_wallet(user_id: int, user: CurrentUser, db: DbSession) -> WalletResponse
             status_code=status.HTTP_404_NOT_FOUND, detail="User not found"
         )
     return WalletResponse(user_id=row.id, balance_cents=row.balance_cents)
+
+
+@router.post(
+    "/{user_id}/wallet/withdraw",
+    response_model=WalletWithdrawResponse,
+    status_code=status.HTTP_200_OK,
+)
+def withdraw_wallet_funds(
+    user_id: int, request: WalletAddFundsRequest, user: CurrentUser, db: DbSession
+) -> WalletWithdrawResponse:
+    _require_self(user_id, user)
+
+    row = db.get(User, user.id)
+
+    if row is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="User not found"
+        )
+
+    if row.balance_cents < request.amount_cents:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="Insufficient funds",
+        )
+
+    entry = LedgerEntry(
+        user_id=row.id,
+        amount_cents=-request.amount_cents,
+        entry_type="withdrawal",
+        note=request.note,
+        lock_id=None,
+    )
+
+    row.balance_cents -= request.amount_cents
+    db.add(entry)
+    db.commit()
+    db.refresh(row)
+    db.refresh(entry)
+
+    return WalletWithdrawResponse(
+        user_id=row.id,
+        balance_cents=row.balance_cents,
+        debited_cents=request.amount_cents,
+        ledger_entry_id=entry.id,
+    )
 
 
 @router.post(

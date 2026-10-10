@@ -362,3 +362,11 @@ class LockResponse(BaseModel):
 
 class LockListResponse(BaseModel):
     locks: list[LockResponse]
+
+
+class WalletWithdrawResponse(BaseModel):
+    user_id: int
+    balance_cents: int
+    debited_cents: int
+    ledger_entry_id: int
+    currency: Literal["USD"] = "USD"
