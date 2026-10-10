@@ -13,11 +13,15 @@ class WalletResponse(BaseModel):
 class WalletAddFundsRequest(BaseModel):
     # Skeleton only: payment authorization and settlement are not implemented.
     amount_cents: int = Field(gt=0)
+    note: str | None = Field(default=None, max_length=200)
 
 
 class WalletAddFundsResponse(BaseModel):
-    status: Literal["not_implemented"] = "not_implemented"
-    message: str
+    user_id: int
+    balance_cents: int
+    credited_cents: int
+    ledger_entry_id: int
+    currency: Literal["USD"] = "USD"
 
 
 class FareHistoryPoint(BaseModel):
