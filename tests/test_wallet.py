@@ -155,3 +155,105 @@ def test_add_funds_rejects_non_positive_amount(client, db):
         json={"amount_cents": 0},
     )
     assert response.status_code == 422
+
+
+def test_get_transactions_empty(client, db):
+    user = _create_user(db)
+    response = client.get(
+        f"/users/{user.id}/wallet/transactions",
+        headers=_auth_header(user),
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {"user_id": user.id, "transactions": []}
+
+
+def test_get_transactions_returns_newest_first(client, db):
+    user = _create_user(db)
+    older = LedgerEntry(
+        user_id=user.id,
+        amount_cents=100,
+        entry_type="recharge",
+        note="first",
+        lock_id=None,
+    )
+    newer = LedgerEntry(
+        user_id=user.id,
+        amount_cents=-50,
+        entry_type="lock_fee",
+        note="fee",
+        lock_id=None,
+    )
+    db.add_all([older, newer])
+    db.commit()
+    db.refresh(older)
+    db.refresh(newer)
+
+    response = client.get(
+        f"/users/{user.id}/wallet/transactions",
+        headers=_auth_header(user),
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["user_id"] == user.id
+    assert [tx["id"] for tx in body["transactions"]] == [newer.id, older.id]
+    assert body["transactions"][0]["amount_cents"] == -50
+    assert body["transactions"][0]["entry_type"] == "lock_fee"
+    assert body["transactions"][0]["note"] == "fee"
+    assert body["transactions"][0]["lock_id"] is None
+    assert "created_at" in body["transactions"][0]
+    assert body["transactions"][1]["amount_cents"] == 100
+    assert body["transactions"][1]["entry_type"] == "recharge"
+
+
+def test_get_transactions_excludes_other_users(client, db):
+    user = _create_user(db)
+    other = _create_user(db, email="other@example.com")
+    db.add(
+        LedgerEntry(
+            user_id=other.id,
+            amount_cents=999,
+            entry_type="recharge",
+            note="secret",
+            lock_id=None,
+        )
+    )
+    db.add(
+        LedgerEntry(
+            user_id=user.id,
+            amount_cents=25,
+            entry_type="recharge",
+            note="mine",
+            lock_id=None,
+        )
+    )
+    db.commit()
+
+    response = client.get(
+        f"/users/{user.id}/wallet/transactions",
+        headers=_auth_header(user),
+    )
+
+    assert response.status_code == 200
+    txs = response.json()["transactions"]
+    assert len(txs) == 1
+    assert txs[0]["amount_cents"] == 25
+    assert txs[0]["note"] == "mine"
+
+
+def test_get_transactions_rejects_other_user(client, db):
+    user = _create_user(db)
+    other = _create_user(db, email="other@example.com")
+    response = client.get(
+        f"/users/{other.id}/wallet/transactions",
+        headers=_auth_header(user),
+    )
+
+    assert response.status_code == 403
+
+
+def test_get_transactions_requires_auth(client, db):
+    user = _create_user(db)
+    response = client.get(f"/users/{user.id}/wallet/transactions")
+    assert response.status_code == 401
