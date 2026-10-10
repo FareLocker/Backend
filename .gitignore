@@ -221,3 +221,6 @@ __marimo__/
 # Streamlit
 .streamlit/secrets.toml
 pyrightconfig.json
+
+data/*
+!data/.gitkeep
