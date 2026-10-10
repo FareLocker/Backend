@@ -340,3 +340,25 @@ class LockExerciseResponse(BaseModel):
     fee_cents: int
     balance_cents: int
     currency: Literal["USD"] = "USD"
+
+
+class LockResponse(BaseModel):
+    id: int
+    origin: str
+    destination: str
+    departure_date: date
+    flight_number: str | None
+    strike_cents: int
+    fee_cents: int
+    max_payout_cents: int
+    protection_days: int
+    status: str
+    bought_at: datetime
+    settled_at: datetime | None
+    settle_fare_cents: int | None
+    payout_cents: int | None
+    currency: Literal["USD"] = "USD"
+
+
+class LockListResponse(BaseModel):
+    locks: list[LockResponse]

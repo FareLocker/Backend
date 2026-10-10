@@ -1,10 +1,11 @@
 """Purchase FareLocks (settlement lives in app.services.locks)."""
 
 from datetime import UTC, date, datetime
-from typing import Annotated
+from typing import Annotated, Literal
 from zoneinfo import ZoneInfo
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.auth import CurrentUser
@@ -14,7 +15,9 @@ from app.routers.quotes import _normalize_flight_number, _price_farelock
 from app.schemas import (
     FareLockPriceRequest,
     LockExerciseResponse,
+    LockListResponse,
     LockPurchaseResponse,
+    LockResponse,
     NaturalFareLockQuoteRequest,
 )
 from app.services.locks import (
@@ -29,6 +32,7 @@ from app.services.pricer import PAYOUT_CAP
 
 router = APIRouter(prefix="/locks", tags=["locks"])
 DbSession = Annotated[Session, Depends(get_db)]
+LockStatus = Literal["open", "exercised", "expired", "pending_verification"]
 
 
 def _lock_error(code: str, message: str, **context: object) -> HTTPException:
@@ -251,6 +255,60 @@ def _early_exercise_lock(
     db.refresh(lock)
     db.refresh(row)
     return lock, row
+
+
+def _to_lock_response(lock: Lock) -> LockResponse:
+    origin, destination = lock.route.split("-")
+    return LockResponse(
+        id=lock.id,
+        origin=origin,
+        destination=destination,
+        departure_date=lock.departure_date,
+        flight_number=lock.flight_no,
+        strike_cents=round(lock.K * 100),
+        fee_cents=round(lock.fee * 100),
+        max_payout_cents=round(PAYOUT_CAP * lock.K * 100),
+        protection_days=lock.T_days,
+        status=lock.status,
+        bought_at=lock.bought_at,
+        settled_at=lock.settled_at,
+        settle_fare_cents=(
+            None if lock.settle_fare is None else round(lock.settle_fare * 100)
+        ),
+        payout_cents=None if lock.payout is None else round(lock.payout * 100),
+    )
+
+
+@router.get("", response_model=LockListResponse)
+def list_locks(
+    user: CurrentUser,
+    db: DbSession,
+    status_filter: LockStatus | None = Query(default=None, alias="status"),
+) -> LockListResponse:
+    stmt = (
+        select(Lock)
+        .where(Lock.user_id == user.id)
+        .order_by(Lock.bought_at.desc(), Lock.id.desc())
+    )
+    if status_filter is not None:
+        stmt = stmt.where(Lock.status == status_filter)
+    rows = db.scalars(stmt).all()
+    return LockListResponse(locks=[_to_lock_response(lock) for lock in rows])
+
+
+@router.get("/{lock_id}", response_model=LockResponse)
+def get_lock(lock_id: int, user: CurrentUser, db: DbSession) -> LockResponse:
+    lock = db.get(Lock, lock_id)
+    if lock is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Lock not found"
+        )
+    if lock.user_id != user.id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Cannot access another user's lock",
+        )
+    return _to_lock_response(lock)
 
 
 @router.post("/{lock_id}/exercise", response_model=LockExerciseResponse)
