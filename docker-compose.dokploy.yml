@@ -38,8 +38,13 @@ services:
     restart: always
     env_file:
       - .env
+    environment:
+      # Use Docker's internal DNS instead of the public API URL.
+      FARELOCK_API_URL: http://api:8000
     expose:
       - "8787"
+    depends_on:
+      - api
     networks:
       - default
 

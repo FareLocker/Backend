@@ -8,11 +8,11 @@ from app.config import settings
 from app.jobs import start_jobs, stop_jobs
 from app.routers.auth import router as auth_router
 from app.routers.fares import router as fares_router
+from app.routers.locks import router as locks_router
 from app.routers.market import router as market_router
 from app.routers.quotes import router as quotes_router
 from app.routers.search import router as search_router
 from app.routers.wallet import router as wallet_router
-from app.routers.locks import router as locks_router
 from app.services.ingest import ingest_fares_csv
 
 
