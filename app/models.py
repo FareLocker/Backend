@@ -1,10 +1,29 @@
-from datetime import datetime
-from sqlalchemy import JSON, DateTime, Float, Integer, String
+from datetime import date, datetime
+from sqlalchemy import JSON, Date, DateTime, Float, Index, Integer, String, Text
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 
 class Base(DeclarativeBase):
     pass
+
+
+class FareObservation(Base):
+    __tablename__ = "fare_observations"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    queried_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    origin: Mapped[str] = mapped_column(String(3))
+    dest: Mapped[str] = mapped_column(String(3))
+    departure_date: Mapped[date] = mapped_column(Date, index=True)
+    d: Mapped[int] = mapped_column(Integer)
+    dow: Mapped[int] = mapped_column(Integer)
+    airline: Mapped[str | None] = mapped_column(String(50))
+    flight_no: Mapped[str | None] = mapped_column(Text)
+    cabin: Mapped[str] = mapped_column(String(20), default="economy")
+    price: Mapped[float] = mapped_column(Float)
+    codeshares: Mapped[str | None] = mapped_column(Text)
+
+    __table_args__ = (Index("ix_fare_obs_route", "origin", "dest"),)
 
 
 class CurveFit(Base):
@@ -38,7 +57,7 @@ class Lock(Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     route: Mapped[str] = mapped_column(String(7), index=True)
     flight_no: Mapped[str | None] = mapped_column(String(10))
-    departure_date: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    departure_date: Mapped[date] = mapped_column(Date, index=True)
     K: Mapped[float] = mapped_column(Float)
     T_days: Mapped[int] = mapped_column(Integer)
     d0: Mapped[int] = mapped_column(Integer)
