@@ -9,7 +9,6 @@ from app.routers import search
 from app.schemas import FlightSearchRequest, NaturalFlightSearchRequest
 from app.services.natural_search import SearchParseError, parse_natural_search
 
-
 REFERENCE_DATE = date(2026, 10, 9)  # Friday
 
 

@@ -1,4 +1,5 @@
-from datetime import date, datetime
+from datetime import UTC, date, datetime
+
 from sqlalchemy import (
     JSON,
     Date,
@@ -101,3 +102,15 @@ class Wallet(Base):
     # cents so balance arithmetic does not accumulate floating point errors.
     user_id: Mapped[str] = mapped_column(String(64), primary_key=True)
     balance_cents: Mapped[int] = mapped_column(Integer, default=0)
+
+
+class FareSnapshot(Base):
+    """Latest normalized live itinerary, retained for the detail page."""
+
+    __tablename__ = "fare_snapshots"
+
+    id: Mapped[str] = mapped_column(String(160), primary_key=True)
+    payload: Mapped[dict] = mapped_column(JSON)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(UTC)
+    )
