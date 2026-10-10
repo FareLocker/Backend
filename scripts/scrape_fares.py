@@ -160,14 +160,7 @@ def scrape_grid(
     *,
     write_db: bool = False,
 ) -> tuple[int, int]:
-    """Run one full grid pass, appending every observation to out_path.
-
-    Append-only: If write_db=True, also insert into fare_observations
-    (idempotent via uq_fare_obs_natural). Returns (rows_appended, failed_cells).
-    """
-    os.makedirs(os.path.dirname(os.path.abspath(out_path)), exist_ok=True)
-    write_header = not os.path.exists(out_path) or os.path.getsize(out_path) == 0
-
+    """Run one full grid pass. CSV append is best-effort; DB writes when write_db=True."""
     today = datetime.now(timezone.utc).date()
     n_cells = len(ROUTES) * (d_max - d_min + 1)
     print(
@@ -182,47 +175,66 @@ def scrape_grid(
 
         db = SessionLocal()
 
-    n_rows, n_fail = 0, 0
+    fh = None
+    writer = None
     try:
-        with open(out_path, "a", newline="", encoding="utf-8") as fh:
+        try:
+            os.makedirs(os.path.dirname(os.path.abspath(out_path)), exist_ok=True)
+            write_header = (
+                not os.path.exists(out_path) or os.path.getsize(out_path) == 0
+            )
+            fh = open(out_path, "a", newline="", encoding="utf-8")
             writer = csv.DictWriter(fh, fieldnames=CSV_COLUMNS)
             if write_header:
                 writer.writeheader()
-            for origin, destination in ROUTES:
-                for d in range(d_min, d_max + 1):
-                    departure = today + timedelta(days=d)
-                    for attempt in range(MAX_RETRIES + 1):
-                        try:
-                            rows = scrape_query(origin, destination, departure)
-                            break
-                        except Exception as exc:  # noqa: BLE001 -- keep grid moving
-                            if attempt >= MAX_RETRIES:
-                                print(
-                                    f"  FAIL {origin}->{destination} d={d}: {exc}",
-                                    file=sys.stderr,
-                                )
-                                n_fail += 1
-                                rows = []
-                            else:
-                                time.sleep(sleep_seconds)
-                    for row in rows:
-                        writer.writerow(row)
-                        n_rows += 1
-                    fh.flush()
-                    if db is not None and rows:
-                        try:
-                            persist_scrape_rows(rows, db)
-                        except Exception as exc:
+        except OSError as exc:
+            print(f"  CSV disabled ({out_path}): {exc}", file=sys.stderr)
+            fh = None
+            writer = None
+
+        n_rows, n_fail = 0, 0
+        for origin, destination in ROUTES:
+            for d in range(d_min, d_max + 1):
+                departure = today + timedelta(days=d)
+                for attempt in range(MAX_RETRIES + 1):
+                    try:
+                        rows = scrape_query(origin, destination, departure)
+                        break
+                    except Exception as exc:  # noqa: BLE001 -- keep grid moving
+                        if attempt >= MAX_RETRIES:
                             print(
-                                f" DB FAIL {origin}->{destination} d={d}: {exc}",
+                                f"  FAIL {origin}->{destination} d={d}: {exc}",
                                 file=sys.stderr,
                             )
-                    print(f"  {origin}->{destination} d={d}: {len(rows)} flights")
-                    time.sleep(sleep_seconds)
+                            n_fail += 1
+                            rows = []
+                        else:
+                            time.sleep(sleep_seconds)
+
+                if writer is not None:
+                    for row in rows:
+                        writer.writerow(row)
+                    fh.flush()
+
+                n_rows += len(rows)
+
+                if db is not None and rows:
+                    try:
+                        persist_scrape_rows(rows, db)
+                    except Exception as exc:
+                        print(
+                            f" DB FAIL {origin}->{destination} d={d}: {exc}",
+                            file=sys.stderr,
+                        )
+                print(f"  {origin}->{destination} d={d}: {len(rows)} flights")
+                time.sleep(sleep_seconds)
+
+        return n_rows, n_fail
     finally:
+        if fh is not None:
+            fh.close()
         if db is not None:
             db.close()
-    return n_rows, n_fail
 
 
 def main() -> int:
