@@ -92,3 +92,12 @@ class Lock(Base):
     settled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     settle_fare: Mapped[float | None] = mapped_column(Float)
     payout: Mapped[float | None] = mapped_column(Float)
+
+
+class Wallet(Base):
+    __tablename__ = "wallets"
+
+    # Supabase auth user IDs own wallet balances. Amounts are stored as integer
+    # cents so balance arithmetic does not accumulate floating point errors.
+    user_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    balance_cents: Mapped[int] = mapped_column(Integer, default=0)

@@ -9,6 +9,40 @@ class AuthenticatedUserResponse(BaseModel):
     email: str | None = None
 
 
+class WalletResponse(BaseModel):
+    user_id: str
+    balance_cents: int
+    currency: Literal["USD"] = "USD"
+
+
+class WalletAddFundsRequest(BaseModel):
+    # Skeleton only: payment authorization and settlement are not implemented.
+    amount_cents: int = Field(gt=0)
+
+
+class WalletAddFundsResponse(BaseModel):
+    status: Literal["not_implemented"] = "not_implemented"
+    message: str
+
+
+class FareHistoryPoint(BaseModel):
+    queried_at: datetime
+    price: float
+
+
+class FareDetailResponse(BaseModel):
+    id: str
+    origin: str
+    destination: str
+    departure_date: date
+    flight_number: str | None
+    airline: str | None
+    cabin: str
+    currency: Literal["USD"] = "USD"
+    latest_fare: float
+    history: list[FareHistoryPoint]
+
+
 class NaturalFlightSearchRequest(BaseModel):
     """Free-form flight search submitted by the website search box."""
 
