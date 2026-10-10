@@ -36,38 +36,48 @@ def load_observations(route: tuple[str, str], db: Session) -> pd.DataFrame:
                 "d": r.d,
                 "departure_date": r.departure_date,
                 "flight_no": r.flight_no,
+                "queried_at": r.queried_at,
             }
             for r in rows
         ]
     )
     if not rows:
         return pd.DataFrame(
-            columns=["fare", "d", "dow", "holiday", "flight_no", "departure_date"]
+            columns=[
+                "fare",
+                "d",
+                "dow",
+                "holiday",
+                "flight_no",
+                "departure_date",
+                "queried_at",
+            ]
         )
     df["dow"] = pd.to_datetime(df["departure_date"]).dt.weekday
     df["holiday"] = 0
     return df
 
 
-def save_curve_fit(route: tuple[str, str], params: dict, db: Session) -> None:
-    """Persist a fitted term-structure param dict.
+def save_curve_fit(
+    route: tuple[str, str],
+    params: dict,
+    db: Session,
+    flight_premia: dict[str, float] | None = None,
+) -> None:
+    """Persist a fitted term-structure param dict and flight premia.
 
     Args:
-        route: Directional route tuple, e.g. ('ATL','JFK').
-        params: Flat coefficient dict as returned by fit_route_curve.
+        route: Directional route tuple, e.g. ('ATL', 'JFK').
+        params: Flat coefficient dict as returned by fit_route_curve
         db: SQLAlchemy session.
-
-    Appends a new row to curve_fits (with empty flight_premia);
-    readers always take the latest row per route. Append-only —
-    no upsert logic, full fit history retained.
+        flight_premia: {flight_no: delta} from estimate_flight_premia.
     """
-
     db.add(
         CurveFit(
             route=f"{route[0]}-{route[1]}",
             fitted_at=datetime.now(timezone.utc),
             params=params,
-            flight_premia={},
+            flight_premia=flight_premia or {},
         )
     )
     db.commit()
@@ -136,13 +146,60 @@ def make_f(params: dict) -> Callable[[int, int, int], float]:
     return f
 
 
-def refit_all_routes() -> None:
-    """Refit the term structure for every route and persist the params.
+def estimate_flight_premia(
+    obs: pd.DataFrame, f: Callable[[int, int, int], float], *, min_obs: int = 5
+) -> dict[str, float]:
+    """Per-flight level adjustment δ = median ln(S / f_route).
+    Args:
+        obs: Full route observations (not the cheapest-fare index),
+            with columns fare, d, dow, holiday, flight_no.
+        f: Route curve callable from make_f.
+        min_obs: Minimum residuals required to publish a δ;
+            thinner flights are omitted (readers treat missing as 0).
+    Returns:
+        {flight_no: δ} for flights meeting min_obs.
+    """
 
+    rows = obs.dropna(subset=["flight_no", "fare"]).copy()
+
+    if rows.empty:
+        return {}
+
+    f_route = [
+        f(int(d), int(dow), int(hol))
+        for d, dow, hol in zip(rows["d"], rows["dow"], rows["holiday"])
+    ]
+    rows["delta"] = np.log(rows["fare"].to_numpy(float) / np.asarray(f_route))
+
+    premia: dict[str, float] = {}
+    for flight_no, grp in rows.groupby("flight_no"):
+        if len(grp) < min_obs:
+            continue
+        premia[str(flight_no)] = float(np.median(grp["delta"]))
+    return premia
+
+
+def make_f_flight(
+    params: dict, flight_premia: dict[str, float]
+) -> Callable[[int, int, int, str | None], float]:
+    """Build f_flight(d, dow, hol, flight_no) = f_route × exp(δ).
+    Missing or None flight_no → δ = 0 (route curve).
+    """
+    f = make_f(params)
+
+    def f_flight(d: int, dow: int, hol: int, flight_no: str | None) -> float:
+        delta = flight_premia.get(flight_no, 0.0) if flight_no else 0.0
+        return float(f(d, dow, hol) * np.exp(delta))
+
+    return f_flight
+
+
+def refit_all_routes() -> None:
+    """Refit the term structure and flight premia for every route.
     For each route: load fare observations, build the cheapest-fare
     index (one row per departure_date), fit via fit_route_curve,
-    and upsert the resulting param dict into the curve_fits table.
-
+    estimate per-flight δ against that curve, and append both into
+    curve_fits.
     Routes with fewer than 30 index rows are skipped — the previous
     fit stands until enough data accumulates. Intended to run hourly
     from the scheduler (see app/jobs.py).
@@ -158,6 +215,8 @@ def refit_all_routes() -> None:
             idx = obs.loc[obs.groupby("departure_date")["fare"].idxmin()].copy()
             idx["log_fare"] = np.log(idx["fare"])
             params = fit_route_curve(idx)
-            save_curve_fit(route, params, db)
+            f = make_f(params)
+            premia = estimate_flight_premia(obs, f)
+            save_curve_fit(route, params, db, flight_premia=premia)
     finally:
         db.close()
