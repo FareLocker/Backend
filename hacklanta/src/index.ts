@@ -17,7 +17,10 @@ const app = await Spectrum({
   ],
 });
 
-const messagingSecret = process.env.PHOTON_INTERNAL_SECRET;
+// PHOTON_MESSAGING_SECRET is retained for existing deployments. New
+// deployments should use PHOTON_INTERNAL_SECRET, which matches the API's name.
+const messagingSecret =
+  process.env.PHOTON_INTERNAL_SECRET ?? process.env.PHOTON_MESSAGING_SECRET;
 const messagingPort = Number(process.env.PHOTON_MESSAGING_PORT ?? 8787);
 
 const sendWelcome = async (request: Request): Promise<Response> => {

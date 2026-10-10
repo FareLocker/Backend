@@ -33,6 +33,16 @@ services:
       - default
       - dokploy-network
 
+  photon-worker:
+    build: ./hacklanta
+    restart: always
+    env_file:
+      - ./hacklanta/.env
+    expose:
+      - "8787"
+    networks:
+      - default
+
 volumes:
   pgdata:
   fares_data:

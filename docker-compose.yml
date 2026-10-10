@@ -34,6 +34,15 @@ services:
       db:
         condition: service_healthy
 
+  photon-worker:
+    build: ./hacklanta
+    container_name: farelocker-photon-worker
+    restart: always
+    env_file:
+      - ./hacklanta/.env
+    expose:
+      - "8787"
+
 
 volumes:
   pgdata:

@@ -1,14 +1,15 @@
 import json
 import logging
+from typing import Annotated
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
-from typing import Annotated
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.auth import CurrentUser, create_access_token, hash_password, verify_password
+from app.config import settings
 from app.db import get_db
 from app.models import User
 from app.schemas import (
@@ -17,8 +18,6 @@ from app.schemas import (
     RegisterRequest,
     TokenResponse,
 )
-
-from app.config import settings
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 DbSession = Annotated[Session, Depends(get_db)]
