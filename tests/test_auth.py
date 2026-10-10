@@ -18,6 +18,7 @@ from app.config import settings
 from app.db import get_db
 from app.main import app
 from app.models import Base, User
+from app.routers import auth as auth_router
 
 
 @pytest.fixture
@@ -87,6 +88,69 @@ def test_register_returns_token_and_creates_user(client, db):
     assert user.phone_number == "+15551234567"
     assert user.balance_cents == 0
     assert verify_password("password123", user.hashed_password)
+
+
+def test_register_sends_welcome_when_phone_is_supplied(client, monkeypatch):
+    sent: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        auth_router,
+        "_send_signup_welcome",
+        lambda phone_number, first_name: sent.append((phone_number, first_name)),
+    )
+
+    response = client.post("/auth/register", json=REGISTER)
+
+    assert response.status_code == 201
+    assert sent == [("+15551234567", "Ada")]
+
+
+def test_register_does_not_send_welcome_without_phone(client, monkeypatch):
+    sent: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        auth_router,
+        "_send_signup_welcome",
+        lambda phone_number, first_name: sent.append((phone_number, first_name)),
+    )
+
+    response = client.post(
+        "/auth/register", json={**REGISTER, "phone_number": None}
+    )
+
+    assert response.status_code == 201
+    assert sent == []
+
+
+def test_signup_welcome_uses_authenticated_photon_request(monkeypatch):
+    captured: dict[str, object] = {}
+
+    class Response:
+        status = 200
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+    def fake_urlopen(request, timeout):
+        captured["url"] = request.full_url
+        captured["body"] = request.data
+        captured["secret"] = request.get_header("X-photon-internal-secret")
+        captured["timeout"] = timeout
+        return Response()
+
+    monkeypatch.setattr(settings, "photon_messaging_url", "http://photon.test:8787")
+    monkeypatch.setattr(settings, "photon_messaging_secret", "shared-secret")
+    monkeypatch.setattr(auth_router, "urlopen", fake_urlopen)
+
+    auth_router._send_signup_welcome("+15551234567", "Ada")
+
+    assert captured == {
+        "url": "http://photon.test:8787/send-welcome",
+        "body": b'{"phone_number": "+15551234567", "first_name": "Ada"}',
+        "secret": "shared-secret",
+        "timeout": settings.photon_messaging_timeout_seconds,
+    }
 
 
 def test_register_normalizes_email(client, db):

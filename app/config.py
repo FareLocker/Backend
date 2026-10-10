@@ -10,6 +10,11 @@ class Settings(BaseSettings):
     postgres_port: int = 5432
     cors_origins: str = "http://localhost:3000"
 
+    # Photon signup messaging
+    photon_messaging_url: str | None = None
+    photon_messaging_secret: str | None = None
+    photon_messaging_timeout_seconds: float = 3.0
+
     # auth
     secret_key: str = "change-me-in-prod"
     access_token_expire_minutes: int = 60 * 24 * 7  # 7 days
