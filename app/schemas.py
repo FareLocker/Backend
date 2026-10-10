@@ -275,3 +275,23 @@ class GooglePriceHistoryResponse(BaseModel):
     estimated_savings: int | None = None
     destination_city: str | None = None
     price_history: list[GooglePriceHistoryPoint]
+
+
+class FareLockPriceRequest(BaseModel):
+    origin: str = Field(min_length=3, max_length=3)
+    destination: str = Field(min_length=3, max_length=3)
+    departure_date: date
+    flight_number: str | None = None
+    fare_cents: int = Field(gt=0)
+
+
+class FareLockPriceResponse(BaseModel):
+    origin: str
+    destination: str
+    departure_date: date
+    flight_number: str | None
+    fare_cents: int
+    fee_cents: int
+    max_payout_cents: int
+    protection_days: int
+    currency: Literal["USD"] = "USD"
