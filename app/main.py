@@ -1,10 +1,12 @@
 from contextlib import asynccontextmanager
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from app.routers.search import router as search_router
 
 @asynccontextmanager
-async def lifespan(app: FastAPI):
+async def lifespan(_app: FastAPI):
     yield
 
 
@@ -21,3 +23,6 @@ app.add_middleware(
 @app.get("/health")
 def health():
     return {"ok": True}
+
+
+app.include_router(search_router)
