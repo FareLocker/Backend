@@ -1,4 +1,4 @@
-"""Background schedulers for FareLocker API process.
+"""Background API jobs and the standalone lock-settlement worker.
 
 Default: hourly curve + vol refit.
 Optional: in-process scrape tiers when settings.scraper_enabled
@@ -9,13 +9,19 @@ from __future__ import annotations
 
 import logging
 import sys
+import time
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from apscheduler.executors.pool import ThreadPoolExecutor
 from apscheduler.schedulers.background import BackgroundScheduler
+from sqlalchemy import select
 
 from app.config import settings
+from app.db import SessionLocal, init_db
+from app.models import Lock
 from app.services.curves import refit_all_routes
+from app.services.locks import settle_lock
 from app.services.vol import refit_all_vols
 
 log = logging.getLogger("farelocker.jobs")
@@ -101,3 +107,53 @@ def stop_jobs() -> None:
     _sched.shutdown(wait=False)
     _sched = None
     log.info("jobs stopped")
+
+
+def settle_due_locks(*, now: datetime | None = None) -> dict[str, int]:
+    now = now or datetime.now(timezone.utc)
+    if now.tzinfo is None or now.utcoffset() is None:
+        raise ValueError("now must be timezone-aware")
+    now = now.astimezone(timezone.utc)
+
+    with SessionLocal() as db:
+        ids = list(
+            db.scalars(
+                select(Lock.id).where(
+                    Lock.status.in_(("open", "pending_verification")),
+                    Lock.departure_date <= now.date() + timedelta(days=1),
+                )
+            )
+        )
+
+    counts = {"settled": 0, "pending_verification": 0, "failed": 0}
+    for lock_id in ids:
+        with SessionLocal() as db:
+            try:
+                lock = settle_lock(db, lock_id, now=now)
+            except Exception:
+                db.rollback()
+                counts["failed"] += 1
+                log.exception("Settlement failed for lock %s", lock_id)
+                continue
+            if lock is None:
+                continue
+            if lock.status == "pending_verification":
+                counts["pending_verification"] += 1
+                log.warning("Lock %s needs fare verification", lock_id)
+            else:
+                counts["settled"] += 1
+                log.info("Settled lock %s: status=%s payout=%.2f", lock_id, lock.status, lock.payout)
+    return counts
+
+
+def main() -> None:
+    logging.basicConfig(level=logging.INFO)
+    init_db()
+    interval = max(1, settings.settlement_interval_minutes) * 60
+    while True:
+        log.info("Lock settlement pass: %s", settle_due_locks())
+        time.sleep(interval)
+
+
+if __name__ == "__main__":
+    main()

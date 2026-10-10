@@ -1,7 +1,34 @@
-from datetime import date
+from datetime import date, datetime
 from typing import Literal
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
+
+
+class AuthenticatedUserResponse(BaseModel):
+    id: str
+    email: str | None = None
+
+
+class NaturalFlightSearchRequest(BaseModel):
+    """Free-form flight search submitted by the website search box."""
+
+    query: str = Field(min_length=1, max_length=200)
+
+    model_config = {
+        "json_schema_extra": {
+            "examples": [
+                {"query": "flights from ATL to LAX on 2026-11-15"}
+            ]
+        }
+    }
+
+    @field_validator("query")
+    @classmethod
+    def query_must_not_be_blank(cls, value: str) -> str:
+        query = value.strip()
+        if not query:
+            raise ValueError("Search query cannot be blank")
+        return query
 
 
 class FlightSearchRequest(BaseModel):
@@ -72,3 +99,59 @@ class FlightSearchRequest(BaseModel):
         ):
             raise ValueError("Minimum layover cannot exceed maximum layover")
         return self
+
+
+class MarketFare(BaseModel):
+    price: float
+    departure_date: date
+    queried_at: datetime
+    airline: str | None
+    flight_no: str | None
+    cabin: str
+
+
+class MarketRoute(BaseModel):
+    origin: str
+    destination: str
+    latest_fare: MarketFare | None
+    curve_fitted_at: datetime | None
+    volatility_fitted_at: datetime | None
+
+
+class MarketOverview(BaseModel):
+    currency: Literal["USD"] = "USD"
+    routes: list[MarketRoute]
+
+
+class MarketProjection(BaseModel):
+    departure_date: date
+    estimated_fare: float
+
+
+class MarketCurve(BaseModel):
+    fitted_at: datetime
+    holiday_assumption: int = 0
+    projections: list[MarketProjection]
+
+
+class MarketVolatilityBucket(BaseModel):
+    bucket_lo: int
+    bucket_hi: int
+    sigma: float
+    n_obs: int
+    shrink_w: float
+
+
+class MarketVolatility(BaseModel):
+    fitted_at: datetime
+    buckets: list[MarketVolatilityBucket]
+
+
+class MarketDetail(BaseModel):
+    origin: str
+    destination: str
+    currency: Literal["USD"] = "USD"
+    departure_date: date | None
+    observations: list[MarketFare]
+    curve: MarketCurve | None
+    volatility: MarketVolatility | None
