@@ -104,6 +104,32 @@ def test_register_sends_welcome_when_phone_is_supplied(client, monkeypatch):
     assert sent == [("+15551234567", "Ada")]
 
 
+def test_register_normalizes_north_american_phone_for_photon(client, db, monkeypatch):
+    sent: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        auth_router,
+        "_send_signup_welcome",
+        lambda phone_number, first_name: sent.append((phone_number, first_name)),
+    )
+
+    response = client.post(
+        "/auth/register", json={**REGISTER, "phone_number": "(555) 123-4567"}
+    )
+
+    assert response.status_code == 201
+    assert db.query(User).one().phone_number == "+15551234567"
+    assert sent == [("+15551234567", "Ada")]
+
+
+def test_register_rejects_phone_that_cannot_be_normalized(client):
+    response = client.post(
+        "/auth/register", json={**REGISTER, "phone_number": "555-123"}
+    )
+
+    assert response.status_code == 422
+    assert "E.164" in response.json()["detail"]
+
+
 def test_register_does_not_send_welcome_without_phone(client, monkeypatch):
     sent: list[tuple[str, str]] = []
     monkeypatch.setattr(

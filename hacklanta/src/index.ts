@@ -1,4 +1,4 @@
-import { Spectrum } from "spectrum-ts";
+import { attachment, Spectrum } from "spectrum-ts";
 import { imessage } from "@spectrum-ts/imessage";
 import {
   fetchFareLockQuote,
@@ -22,6 +22,10 @@ const app = await Spectrum({
 const messagingSecret =
   process.env.PHOTON_INTERNAL_SECRET ?? process.env.PHOTON_MESSAGING_SECRET;
 const messagingPort = Number(process.env.PHOTON_MESSAGING_PORT ?? 8787);
+const welcomeGifPath = new URL(
+  "./public/farelocker-logo-full.gif",
+  import.meta.url,
+).pathname;
 
 const sendWelcome = async (request: Request): Promise<Response> => {
   if (!messagingSecret) {
@@ -62,7 +66,13 @@ const sendWelcome = async (request: Request): Promise<Response> => {
     const messaging = imessage(app);
     const user = await messaging.user(phoneNumber);
     const space = await messaging.space.create(user);
-    await space.send(`Welcome to FareLocker, ${firstName}! Your account is ready.`);
+    await space.send(
+      `Welcome to FareLocker, ${firstName}! Your account is ready.`,
+      attachment(welcomeGifPath, {
+        name: "farelocker-welcome.gif",
+        mimeType: "image/gif",
+      }),
+    );
     return Response.json({ sent: true });
   } catch (error) {
     console.error("Could not send signup welcome message:", error);
