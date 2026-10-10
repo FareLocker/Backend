@@ -95,6 +95,17 @@ def _trend(history: list[FareHistoryPoint]) -> FareTrendResponse:
     return FareTrendResponse(points_cents=points, change_percent=round(change, 1))
 
 
+def _google_history(insights: object) -> list[FareHistoryPoint]:
+    """Normalize Google Flights price-history points for the shared fare contract."""
+    return [
+        FareHistoryPoint(
+            date=date.fromisoformat(point.iso_date),
+            amount_cents=int(point.price) * 100,
+        )
+        for point in getattr(insights, "price_history", [])
+    ]
+
+
 def _local_time(value: object) -> str:
     """Format the provider's wall-clock SimpleDatetime without timezone conversion."""
     day = getattr(value, "date", None)
@@ -290,11 +301,8 @@ async def price_history(
         estimated_savings=insights.estimated_savings,
         destination_city=insights.destination_city,
         price_history=[
-            GooglePriceHistoryPoint(
-                date=date.fromisoformat(point.iso_date),
-                amount_cents=int(point.price) * 100,
-            )
-            for point in insights.price_history
+            GooglePriceHistoryPoint(**point.model_dump())
+            for point in _google_history(insights)
         ],
     )
 
@@ -310,11 +318,28 @@ def get_fare_detail(fare_key: str, db: DbSession) -> FareDetailResponse:
         origin, destination, departure, flight_no = _parse_fare_id(fare.id)
     except ValueError as error:
         raise HTTPException(status_code=404, detail="Fare not found") from error
-    history = _history(
+    local_history = _history(
         db,
         origin=origin,
         destination=destination,
         departure=departure,
         flight_no=flight_no,
     )
-    return FareDetailResponse(fare=fare, history=history)
+    try:
+        google_history = _google_history(
+            fetch_price_history(
+                flight_number=fare.flight_number,
+                departure_date=departure,
+                origin=origin,
+                destination=destination,
+            )
+        )
+    except Exception:
+        google_history = []
+
+    history = google_history or local_history
+    return FareDetailResponse(
+        fare=fare,
+        history=history,
+        history_source="google" if google_history else "local",
+    )

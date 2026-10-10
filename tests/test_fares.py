@@ -81,6 +81,97 @@ def test_normalized_live_itinerary_uses_a_stable_id_and_empty_history():
     assert fare.trend.points_cents == []
 
 
+def test_fare_detail_uses_google_price_history_when_available(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    db = session()
+    departure = date(2026, 11, 15)
+    fare = fares.FareSearchResultResponse(
+        id=fare_id("ATL", "MIA", departure, "F93442"),
+        airline_name="Frontier",
+        flight_number="F93442",
+        cabin_class="Economy",
+        stop_airports=[],
+        depart=fares.FareEndpointResponse(
+            airport_code="ATL", airport_name="Atlanta", city="ATL", local_time="2026-11-15T08:00"
+        ),
+        arrive=fares.FareEndpointResponse(
+            airport_code="MIA", airport_name="Miami", city="MIA", local_time="2026-11-15T10:00"
+        ),
+        duration_minutes=120,
+        fare_cents=12000,
+        lock=None,
+        trend=fares.FareTrendResponse(points_cents=[], change_percent=0),
+    )
+    db.add(FareSnapshot(id=fare.id, payload=fare.model_dump()))
+    db.commit()
+    monkeypatch.setattr(
+        fares,
+        "fetch_price_history",
+        lambda **_kwargs: SimpleNamespace(
+            price_history=[
+                SimpleNamespace(iso_date="2026-10-01", price=95),
+                SimpleNamespace(iso_date="2026-10-02", price=100),
+            ]
+        ),
+    )
+
+    response = fares.get_fare_detail(fare.id, db)
+
+    assert response.history_source == "google"
+    assert [(point.date, point.amount_cents) for point in response.history] == [
+        (date(2026, 10, 1), 9500),
+        (date(2026, 10, 2), 10000),
+    ]
+
+
+def test_fare_detail_falls_back_to_local_history_when_google_is_unavailable(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    db = session()
+    departure = date(2026, 11, 15)
+    fare = fares.FareSearchResultResponse(
+        id=fare_id("ATL", "MIA", departure, "F93442"),
+        airline_name="Frontier",
+        flight_number="F93442",
+        cabin_class="Economy",
+        stop_airports=[],
+        depart=fares.FareEndpointResponse(
+            airport_code="ATL", airport_name="Atlanta", city="ATL", local_time="2026-11-15T08:00"
+        ),
+        arrive=fares.FareEndpointResponse(
+            airport_code="MIA", airport_name="Miami", city="MIA", local_time="2026-11-15T10:00"
+        ),
+        duration_minutes=120,
+        fare_cents=12000,
+        lock=None,
+        trend=fares.FareTrendResponse(points_cents=[], change_percent=0),
+    )
+    db.add_all(
+        [
+            FareSnapshot(id=fare.id, payload=fare.model_dump()),
+            FareObservation(
+                queried_at=datetime(2026, 10, 1, 10, tzinfo=UTC), origin="ATL", dest="MIA",
+                departure_date=departure, d=45, dow=6, airline="Frontier", flight_no="F93442",
+                cabin="economy", price=95,
+            ),
+        ]
+    )
+    db.commit()
+    monkeypatch.setattr(
+        fares,
+        "fetch_price_history",
+        lambda **_kwargs: (_ for _ in ()).throw(RuntimeError("Google unavailable")),
+    )
+
+    response = fares.get_fare_detail(fare.id, db)
+
+    assert response.history_source == "local"
+    assert [(point.date, point.amount_cents) for point in response.history] == [
+        (date(2026, 10, 1), 9500),
+    ]
+
+
 def test_search_fares_deduplicates_provider_offers_before_storing_snapshots(
     monkeypatch: pytest.MonkeyPatch,
 ):
