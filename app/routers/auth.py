@@ -45,7 +45,9 @@ def _normalize_phone_number(phone_number: str) -> str | None:
     return None
 
 
-def _send_signup_welcome(phone_number: str, first_name: str) -> None:
+def _send_signup_welcome(
+    phone_number: str, first_name: str, last_name: str, email: str
+) -> None:
     """Ask the Photon worker to send the post-signup iMessage.
 
     This is deliberately best-effort: the user account has already been
@@ -53,12 +55,20 @@ def _send_signup_welcome(phone_number: str, first_name: str) -> None:
     error.
     """
     if not settings.photon_messaging_url or not settings.photon_messaging_secret:
+        logger.warning(
+            "Skipping signup welcome: Photon messaging URL or shared secret is not configured"
+        )
         return
 
     request = Request(
         f"{settings.photon_messaging_url.rstrip('/')}/send-welcome",
         data=json.dumps(
-            {"phone_number": phone_number, "first_name": first_name}
+            {
+                "phone_number": phone_number,
+                "first_name": first_name,
+                "last_name": last_name,
+                "email": email,
+            }
         ).encode(),
         headers={
             "Content-Type": "application/json",
@@ -137,7 +147,13 @@ def register(
     db.refresh(user)
 
     if phone is not None:
-        background_tasks.add_task(_send_signup_welcome, phone, user.first_name)
+        background_tasks.add_task(
+            _send_signup_welcome,
+            phone,
+            user.first_name,
+            user.last_name,
+            user.email,
+        )
 
     return TokenResponse(access_token=create_access_token(user.id))
 
