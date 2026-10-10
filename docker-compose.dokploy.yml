@@ -37,7 +37,7 @@ services:
     build: ./hacklanta
     restart: always
     env_file:
-      - ./hacklanta/.env
+      - .env
     expose:
       - "8787"
     networks:

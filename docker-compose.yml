@@ -39,7 +39,7 @@ services:
     container_name: farelocker-photon-worker
     restart: always
     env_file:
-      - ./hacklanta/.env
+      - .env
     expose:
       - "8787"
 

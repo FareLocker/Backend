@@ -4,7 +4,9 @@ A [Spectrum](https://photon.codes/docs/spectrum-ts) project. Wired with: imessag
 
 ## Environment
 
-Before running, open `.env` and fill in the values:
+For standalone development, open `.env` and fill in the values. When running
+with Docker Compose, place these values in the parent `Backend/.env`; the
+worker and API both load that project-level environment file.
 
 From your project Settings on the [Photon dashboard](https://app.photon.codes):
 
