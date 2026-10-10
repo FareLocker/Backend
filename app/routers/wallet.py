@@ -3,12 +3,19 @@
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, status
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.auth import CurrentUser
 from app.db import get_db
 from app.models import LedgerEntry, User
-from app.schemas import WalletAddFundsRequest, WalletAddFundsResponse, WalletResponse
+from app.schemas import (
+    LedgerEntryResponse,
+    WalletAddFundsRequest,
+    WalletAddFundsResponse,
+    WalletResponse,
+    WalletTransactionResponse,
+)
 
 router = APIRouter(prefix="/users", tags=["wallet"])
 DbSession = Annotated[Session, Depends(get_db)]
@@ -71,4 +78,32 @@ def add_wallet_funds(
         balance_cents=row.balance_cents,
         credited_cents=request.amount_cents,
         ledger_entry_id=entry.id,
+    )
+
+
+@router.get("/{user_id}/wallet/transactions", response_model=WalletTransactionResponse)
+def get_wallet_transactions(
+    user_id: int, user: CurrentUser, db: DbSession
+) -> WalletTransactionResponse:
+    _require_self(user_id, user)
+
+    rows = db.scalars(
+        select(LedgerEntry)
+        .where(LedgerEntry.user_id == user.id)
+        .order_by(LedgerEntry.created_at.desc(), LedgerEntry.id.desc())
+    ).all()
+
+    return WalletTransactionResponse(
+        user_id=user.id,
+        transactions=[
+            LedgerEntryResponse(
+                id=row.id,
+                amount_cents=row.amount_cents,
+                entry_type=row.entry_type,
+                note=row.note,
+                lock_id=row.lock_id,
+                created_at=row.created_at,
+            )
+            for row in rows
+        ],
     )

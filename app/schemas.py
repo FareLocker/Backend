@@ -299,3 +299,17 @@ class FareLockPriceResponse(BaseModel):
     max_payout_cents: int
     protection_days: int
     currency: Literal["USD"] = "USD"
+
+
+class LedgerEntryResponse(BaseModel):
+    id: int
+    amount_cents: int
+    entry_type: str  # recharge | lock_fee | payout | withdrawal
+    note: str | None
+    lock_id: int | None
+    created_at: datetime
+
+
+class WalletTransactionResponse(BaseModel):
+    user_id: int
+    transactions: list[LedgerEntryResponse]
