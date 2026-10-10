@@ -16,6 +16,8 @@ Edit `.env` before running:
 | `SECRET_KEY` | HS256 JWT signing key — use a long random string (≥32 bytes) |
 | `SCRAPER_ENABLED` | Enable background fare scraping when `true` |
 | `HOST_UID` / `HOST_GID` | Optional host user mapping for Docker volume permissions |
+| `PHOTON_MESSAGING_SECRET` | Shared secret used to authenticate welcome-message requests to Photon; must match the worker's `PHOTON_INTERNAL_SECRET` |
+| `PROJECT_ID` / `PROJECT_SECRET` | Spectrum Cloud project credentials used by the Photon worker |
 
 Optional overrides (see `app/config.py`): `CORS_ORIGINS`, `ACCESS_TOKEN_EXPIRE_MINUTES`, `SETTLEMENT_INTERVAL_MINUTES`, `FARES_CSV`.
 

@@ -38,13 +38,23 @@ const sendWelcome = async (request: Request): Promise<Response> => {
     return Response.json({ error: "Unauthorized" }, { status: 401 });
   }
 
-  let body: { phone_number?: unknown; first_name?: unknown };
+  let body: {
+    phone_number?: unknown;
+    first_name?: unknown;
+    last_name?: unknown;
+    email?: unknown;
+  };
   try {
     const parsed: unknown = await request.json();
     if (parsed === null || typeof parsed !== "object") {
       return Response.json({ error: "Invalid JSON body" }, { status: 400 });
     }
-    body = parsed as { phone_number?: unknown; first_name?: unknown };
+    body = parsed as {
+      phone_number?: unknown;
+      first_name?: unknown;
+      last_name?: unknown;
+      email?: unknown;
+    };
   } catch {
     return Response.json({ error: "Invalid JSON" }, { status: 400 });
   }
@@ -55,14 +65,41 @@ const sendWelcome = async (request: Request): Promise<Response> => {
   const firstName = typeof body.first_name === "string"
     ? body.first_name.trim()
     : "";
-  if (!/^\+[1-9]\d{7,14}$/.test(phoneNumber) || !firstName) {
+  const lastName = typeof body.last_name === "string" ? body.last_name.trim() : "";
+  const email = typeof body.email === "string" ? body.email.trim() : "";
+  if (!/^\+[1-9]\d{7,14}$/.test(phoneNumber) || !firstName || !lastName || !email) {
     return Response.json(
-      { error: "phone_number must be E.164 and first_name is required" },
+      {
+        error:
+          "phone_number must be E.164; first_name, last_name, and email are required",
+      },
       { status: 422 },
     );
   }
 
   try {
+    const projectUser = await fetch(
+      `https://spectrum.photon.codes/projects/${encodeURIComponent(process.env.PROJECT_ID!)}/users/`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          type: "shared",
+          phoneNumber,
+          firstName,
+          lastName,
+          email,
+        }),
+      },
+    );
+    // A duplicate means this person was already enrolled in the Photon project,
+    // which is sufficient to send the welcome message.
+    if (!projectUser.ok && projectUser.status !== 409) {
+      throw new Error(
+        `Could not create Photon project user (HTTP ${projectUser.status})`,
+      );
+    }
+
     const messaging = imessage(app);
     const user = await messaging.user(phoneNumber);
     const space = await messaging.space.create(user);

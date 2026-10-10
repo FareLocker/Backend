@@ -91,25 +91,29 @@ def test_register_returns_token_and_creates_user(client, db):
 
 
 def test_register_sends_welcome_when_phone_is_supplied(client, monkeypatch):
-    sent: list[tuple[str, str]] = []
+    sent: list[tuple[str, str, str, str]] = []
     monkeypatch.setattr(
         auth_router,
         "_send_signup_welcome",
-        lambda phone_number, first_name: sent.append((phone_number, first_name)),
+        lambda phone_number, first_name, last_name, email: sent.append(
+            (phone_number, first_name, last_name, email)
+        ),
     )
 
     response = client.post("/auth/register", json=REGISTER)
 
     assert response.status_code == 201
-    assert sent == [("+15551234567", "Ada")]
+    assert sent == [("+15551234567", "Ada", "Lovelace", "traveler@example.com")]
 
 
 def test_register_normalizes_north_american_phone_for_photon(client, db, monkeypatch):
-    sent: list[tuple[str, str]] = []
+    sent: list[tuple[str, str, str, str]] = []
     monkeypatch.setattr(
         auth_router,
         "_send_signup_welcome",
-        lambda phone_number, first_name: sent.append((phone_number, first_name)),
+        lambda phone_number, first_name, last_name, email: sent.append(
+            (phone_number, first_name, last_name, email)
+        ),
     )
 
     response = client.post(
@@ -118,7 +122,7 @@ def test_register_normalizes_north_american_phone_for_photon(client, db, monkeyp
 
     assert response.status_code == 201
     assert db.query(User).one().phone_number == "+15551234567"
-    assert sent == [("+15551234567", "Ada")]
+    assert sent == [("+15551234567", "Ada", "Lovelace", "traveler@example.com")]
 
 
 def test_register_rejects_phone_that_cannot_be_normalized(client):
@@ -131,11 +135,13 @@ def test_register_rejects_phone_that_cannot_be_normalized(client):
 
 
 def test_register_does_not_send_welcome_without_phone(client, monkeypatch):
-    sent: list[tuple[str, str]] = []
+    sent: list[tuple[str, str, str, str]] = []
     monkeypatch.setattr(
         auth_router,
         "_send_signup_welcome",
-        lambda phone_number, first_name: sent.append((phone_number, first_name)),
+        lambda phone_number, first_name, last_name, email: sent.append(
+            (phone_number, first_name, last_name, email)
+        ),
     )
 
     response = client.post(
@@ -169,11 +175,16 @@ def test_signup_welcome_uses_authenticated_photon_request(monkeypatch):
     monkeypatch.setattr(settings, "photon_messaging_secret", "shared-secret")
     monkeypatch.setattr(auth_router, "urlopen", fake_urlopen)
 
-    auth_router._send_signup_welcome("+15551234567", "Ada")
+    auth_router._send_signup_welcome(
+        "+15551234567", "Ada", "Lovelace", "traveler@example.com"
+    )
 
     assert captured == {
         "url": "http://photon.test:8787/send-welcome",
-        "body": b'{"phone_number": "+15551234567", "first_name": "Ada"}',
+        "body": (
+            b'{"phone_number": "+15551234567", "first_name": "Ada", '
+            b'"last_name": "Lovelace", "email": "traveler@example.com"}'
+        ),
         "secret": "shared-secret",
         "timeout": settings.photon_messaging_timeout_seconds,
     }
