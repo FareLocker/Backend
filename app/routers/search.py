@@ -1,14 +1,21 @@
-from fastapi import APIRouter
+from fastapi import APIRouter, HTTPException
 from fastapi.concurrency import run_in_threadpool
-
-#schema that sent by the client
-from app.schemas import FlightSearchRequest
+#Searches from the FastFlight API aswell as natural language search
+from app.schemas import FlightSearchRequest, NaturalFlightSearchRequest
 from app.services.fastflight import search_flights
+from app.services.natural_search import SearchParseError, parse_natural_search
 
 router = APIRouter(prefix="/quotes", tags=["quotes"])
 
+#localhost:8000/quotes/search
 @router.post("/search")
+#Searches for flight quotes based on the provided request
 async def search_quote(request: FlightSearchRequest) -> dict[str, object]:
+    result = await _execute_search(request)
+    return {"results": result, "request_context": request.context}
+
+
+async def _execute_search(request: FlightSearchRequest) -> object:
     result = await run_in_threadpool(
         search_flights,
         origin=request.origin,
@@ -40,4 +47,24 @@ async def search_quote(request: FlightSearchRequest) -> dict[str, object]:
         exclude_basic_economy=request.exclude_basic_economy,
         flight_number=request.flight_number,
     )
-    return {"results": result, "request_context": request.context}
+    return result
+
+
+@router.post("/search/natural")
+async def search_natural(request: NaturalFlightSearchRequest) -> dict[str, object]:
+    try:
+        resolved_search = parse_natural_search(request.query)
+    except SearchParseError as error:
+        raise HTTPException(
+            status_code=422,
+            detail={"code": error.code, "message": error.message},
+        ) from error
+
+    result = await _execute_search(resolved_search)
+    return {
+        "query": request.query,
+        "resolved_search": resolved_search.model_dump(
+            mode="json", exclude={"context"}
+        ),
+        "results": result,
+    }

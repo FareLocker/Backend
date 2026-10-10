@@ -1,13 +1,11 @@
-from pydantic import computed_field
 from pydantic_settings import BaseSettings
 
 
 class Settings(BaseSettings):
-    postgres_user: str = "farelocker"
-    postgres_password: str = "farelocker"
-    postgres_db: str = "farelocker"
-    postgres_host: str = "localhost"
-    postgres_port: int = 5432
+    database_url: str = "sqlite:///./farelocker.db"
+    supabase_url: str | None = None
+    supabase_jwt_audience: str = "authenticated"
+    cors_origins: str = "http://localhost:3000"
 
     # pricing economics
     base_lambda: float = 0.30  # inventory loading
@@ -15,6 +13,7 @@ class Settings(BaseSettings):
 
     # scheduler cadence
     refit_interval_minutes: int = 60
+    settlement_interval_minutes: int = 60
 
     scraper_enabled: bool = False
     fares_csv: str = "data/fares.csv"
@@ -22,13 +21,20 @@ class Settings(BaseSettings):
 
     model_config = {"env_file": ".env", "extra": "ignore"}
 
-    @computed_field
     @property
-    def database_url(self) -> str:
-        return (
-            f"postgresql+psycopg2://{self.postgres_user}:{self.postgres_password}"
-            f"@{self.postgres_host}:{self.postgres_port}/{self.postgres_db}"
-        )
+    def allowed_origins(self) -> list[str]:
+        return [origin.strip() for origin in self.cors_origins.split(",") if origin.strip()]
+
+    @property
+    def supabase_issuer(self) -> str | None:
+        if self.supabase_url is None:
+            return None
+        return f"{self.supabase_url.rstrip('/')}/auth/v1"
+
+    @property
+    def supabase_jwks_url(self) -> str | None:
+        issuer = self.supabase_issuer
+        return f"{issuer}/.well-known/jwks.json" if issuer else None
 
 
 settings = Settings()
