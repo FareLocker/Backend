@@ -80,6 +80,21 @@ _NEXT_WEEKDAY_PATTERN = re.compile(
     re.IGNORECASE,
 )
 _RELATIVE_DATE_PATTERN = re.compile(r"\b(today|tomorrow)\b", re.IGNORECASE)
+_FARE_PATTERNS = (
+    re.compile(r"\$\s*(?P<fare>\d+(?:\.\d{1,2})?)\b"),
+    re.compile(
+        r"\b(?:paid|cost|price|fare(?:\s+was)?|for)\s+\$?"
+        r"(?P<fare>\d+(?:\.\d{1,2})?)\b",
+        re.IGNORECASE,
+    ),
+)
+_FLIGHT_NUMBER_PATTERNS = (
+    re.compile(
+        r"\bflight\s+(?P<carrier>[A-Za-z]{2})\s*(?P<number>\d{1,4})\b",
+        re.IGNORECASE,
+    ),
+    re.compile(r"\b(?P<carrier>[A-Z]{2})\s*(?P<number>\d{1,4})\b"),
+)
 
 
 def _parse_route(query: str) -> tuple[str, str]:
@@ -119,7 +134,9 @@ def _next_month_day(month: int, day: int, reference_date: date) -> date:
     raise ValueError("Invalid month and day")
 
 
-def _parse_departure_date(query: str, reference_date: date) -> date:
+def _parse_departure_date(
+    query: str, reference_date: date, *, required: bool = False
+) -> date:
     candidates: set[date] = set()
 
     for match in _ISO_DATE_PATTERN.finditer(query):
@@ -155,6 +172,11 @@ def _parse_departure_date(query: str, reference_date: date) -> date:
         days_ahead = (target_weekday - reference_date.weekday()) % 7
         candidates.add(reference_date + timedelta(days=days_ahead or 7))
 
+    if not candidates and required:
+        raise SearchParseError(
+            "missing_departure_date",
+            'Include the departure date and fare paid, such as "next Friday, $420".',
+        )
     if not candidates:
         return reference_date + timedelta(days=1)
     if len(candidates) > 1:
@@ -168,6 +190,72 @@ def _parse_departure_date(query: str, reference_date: date) -> date:
             "past_date", "Departure date cannot be in the past."
         )
     return departure_date
+
+
+def _parse_fare_paid(query: str) -> float:
+    fares: set[float] = set()
+    for pattern in _FARE_PATTERNS:
+        for match in pattern.finditer(query):
+            fares.add(float(match.group("fare")))
+
+    if not fares:
+        raise SearchParseError(
+            "missing_fare_paid",
+            'Include the amount paid, such as "$420".',
+        )
+    if len(fares) > 1:
+        raise SearchParseError(
+            "ambiguous_fare_paid",
+            "Include exactly one fare amount.",
+        )
+
+    fare_paid = next(iter(fares))
+    if fare_paid <= 0:
+        raise SearchParseError("invalid_fare_paid", "Fare paid must be greater than zero.")
+    return fare_paid
+
+
+def _parse_flight_number(query: str) -> str | None:
+    matches = set()
+    for pattern in _FLIGHT_NUMBER_PATTERNS:
+        matches.update(
+            f"{match.group('carrier').upper()} {match.group('number')}"
+            for match in pattern.finditer(query)
+        )
+    if len(matches) > 1:
+        raise SearchParseError(
+            "ambiguous_flight_number",
+            "Include at most one flight number.",
+        )
+    return next(iter(matches)) if matches else None
+
+
+@dataclass(frozen=True)
+class ParsedFareLockQuote:
+    origin: str
+    destination: str
+    departure_date: date
+    fare_paid: float
+    flight_number: str | None
+
+
+def parse_natural_farelock_quote(
+    query: str, *, reference_date: date | None = None
+) -> ParsedFareLockQuote:
+    """Resolve a conversational FareLock request into pricing inputs."""
+
+    today = reference_date or date.today()
+    origin, destination = _parse_route(query)
+    departure_date = _parse_departure_date(query, today, required=True)
+    fare_paid = _parse_fare_paid(query)
+    flight_number = _parse_flight_number(query)
+    return ParsedFareLockQuote(
+        origin=origin,
+        destination=destination,
+        departure_date=departure_date,
+        fare_paid=fare_paid,
+        flight_number=flight_number,
+    )
 
 
 def parse_natural_search(

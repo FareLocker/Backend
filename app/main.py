@@ -7,6 +7,7 @@ from app.jobs import start_jobs, stop_jobs
 from app.routers.search import router as search_router
 from app.routers.market import router as market_router
 from app.routers.auth import router as auth_router
+from app.routers.quotes import router as quotes_router
 from app.config import settings
 from app import db
 from app.services.ingest import ingest_fares_csv
@@ -41,3 +42,4 @@ def health():
 app.include_router(search_router)
 app.include_router(market_router)
 app.include_router(auth_router)
+app.include_router(quotes_router)

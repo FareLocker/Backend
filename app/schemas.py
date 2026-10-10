@@ -31,6 +31,32 @@ class NaturalFlightSearchRequest(BaseModel):
         return query
 
 
+class NaturalFareLockQuoteRequest(BaseModel):
+    """Free-form request for a FareLock price quote."""
+
+    query: str = Field(min_length=1, max_length=300)
+
+    @field_validator("query")
+    @classmethod
+    def query_must_not_be_blank(cls, value: str) -> str:
+        query = value.strip()
+        if not query:
+            raise ValueError("FareLock query cannot be blank")
+        return query
+
+
+class FareLockQuoteResponse(BaseModel):
+    origin: str
+    destination: str
+    departure_date: date
+    fare_paid: float
+    flight_number: str | None
+    fee: float
+    max_potential_payout: float
+    protection_days: int
+    currency: Literal["USD"] = "USD"
+
+
 class FlightSearchRequest(BaseModel):
     """Request model for flight search.
     
