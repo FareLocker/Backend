@@ -13,12 +13,17 @@ from app.models import LedgerEntry, Lock, User
 from app.routers.quotes import _normalize_flight_number, _price_farelock
 from app.schemas import (
     FareLockPriceRequest,
-    LockExerciseRequest,
     LockExerciseResponse,
     LockPurchaseResponse,
     NaturalFareLockQuoteRequest,
 )
-from app.services.locks import ORIGIN_TIMEZONES, _compute_payout_dollars, _credit_payout
+from app.services.locks import (
+    ORIGIN_TIMEZONES,
+    _compute_payout_dollars,
+    _credit_payout,
+    _provider_fare,
+    _stored_fare,
+)
 from app.services.natural_search import SearchParseError, parse_natural_farelock_quote
 from app.services.pricer import PAYOUT_CAP
 
@@ -168,7 +173,6 @@ def _early_exercise_lock(
     *,
     lock_id: int,
     user: User,
-    fare_cents: int,
     db: Session,
 ) -> tuple[Lock, User]:
     lock = db.get(Lock, lock_id)
@@ -199,6 +203,25 @@ def _early_exercise_lock(
             "Early exercise is only available before the departure date.",
             departure_date=lock.departure_date.isoformat(),
         )
+
+    try:
+        settle_fare = _provider_fare(lock)
+    except Exception as error:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="Could not fetch current fare for this lock",
+        ) from error
+
+    if settle_fare is None:
+        settle_fare = _stored_fare(lock, db)
+
+    if settle_fare is None:
+        raise _lock_error(
+            "fare_unavailable",
+            "No current fare found for this flight; try again shortly.",
+        )
+
+    fare_cents = round(settle_fare * 100)
 
     strike_cents = round(lock.K * 100)
     if fare_cents >= strike_cents:
@@ -232,11 +255,9 @@ def _early_exercise_lock(
 
 @router.post("/{lock_id}/exercise", response_model=LockExerciseResponse)
 def early_exercise_lock(
-    lock_id: int, request: LockExerciseRequest, user: CurrentUser, db: DbSession
+    lock_id: int, user: CurrentUser, db: DbSession
 ) -> LockExerciseResponse:
-    lock, row = _early_exercise_lock(
-        lock_id=lock_id, user=user, fare_cents=request.fare_cents, db=db
-    )
+    lock, row = _early_exercise_lock(lock_id=lock_id, user=user, db=db)
 
     return LockExerciseResponse(
         id=lock.id,

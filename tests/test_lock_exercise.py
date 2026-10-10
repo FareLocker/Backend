@@ -1,4 +1,4 @@
-"""Early exercise of open FareLocks."""
+"""Early exercise of open FareLocks (server fetches current fare)."""
 
 from __future__ import annotations
 
@@ -15,6 +15,7 @@ from app.config import settings
 from app.db import get_db
 from app.main import app
 from app.models import Base, LedgerEntry, Lock, User
+from app.routers import locks as locks_router
 
 
 @pytest.fixture
@@ -105,14 +106,19 @@ def _open_lock(
     return lock
 
 
-def test_early_exercise_credits_payout_when_fare_below_strike(client, db):
+def _stub_provider_fare(monkeypatch, dollars: float | None):
+    monkeypatch.setattr(locks_router, "_provider_fare", lambda _lock: dollars)
+    monkeypatch.setattr(locks_router, "_stored_fare", lambda _lock, _db: None)
+
+
+def test_early_exercise_credits_payout_when_fare_below_strike(client, db, monkeypatch):
+    _stub_provider_fare(monkeypatch, 80.0)
     user = _create_user(db, balance_cents=500)
     lock = _open_lock(db, user, strike=100.0, fee=15.0)
 
     response = client.post(
         f"/locks/{lock.id}/exercise",
         headers=_auth_header(user),
-        json={"fare_cents": 8000},  # $80 < $100 strike
     )
 
     assert response.status_code == 200
@@ -121,9 +127,9 @@ def test_early_exercise_credits_payout_when_fare_below_strike(client, db):
     assert body["status"] == "exercised"
     assert body["strike_cents"] == 10000
     assert body["settle_fare_cents"] == 8000
-    assert body["payout_cents"] == 2000  # min(20, 50)
+    assert body["payout_cents"] == 2000
     assert body["fee_cents"] == 1500
-    assert body["balance_cents"] == 2500  # 500 + 2000
+    assert body["balance_cents"] == 2500
     assert body["currency"] == "USD"
 
     db.refresh(user)
@@ -143,15 +149,14 @@ def test_early_exercise_credits_payout_when_fare_below_strike(client, db):
     assert entry.amount_cents == 2000
 
 
-def test_early_exercise_allows_payout_smaller_than_fee(client, db):
-    """Net can be negative vs fee already paid — still allowed when S < K."""
+def test_early_exercise_allows_payout_smaller_than_fee(client, db, monkeypatch):
+    _stub_provider_fare(monkeypatch, 95.0)
     user = _create_user(db, balance_cents=0)
     lock = _open_lock(db, user, strike=100.0, fee=15.0)
 
     response = client.post(
         f"/locks/{lock.id}/exercise",
         headers=_auth_header(user),
-        json={"fare_cents": 9500},  # $5 payout < $15 fee
     )
 
     assert response.status_code == 200
@@ -161,28 +166,28 @@ def test_early_exercise_allows_payout_smaller_than_fee(client, db):
     assert body["balance_cents"] == 500
 
 
-def test_early_exercise_caps_payout_at_half_strike(client, db):
+def test_early_exercise_caps_payout_at_half_strike(client, db, monkeypatch):
+    _stub_provider_fare(monkeypatch, 1.0)
     user = _create_user(db, balance_cents=0)
     lock = _open_lock(db, user, strike=100.0)
 
     response = client.post(
         f"/locks/{lock.id}/exercise",
         headers=_auth_header(user),
-        json={"fare_cents": 100},  # $1 → intrinsic 99, cap 50
     )
 
     assert response.status_code == 200
     assert response.json()["payout_cents"] == 5000
 
 
-def test_early_exercise_rejects_fare_at_or_above_strike(client, db):
+def test_early_exercise_rejects_fare_at_or_above_strike(client, db, monkeypatch):
+    _stub_provider_fare(monkeypatch, 100.0)
     user = _create_user(db)
     lock = _open_lock(db, user, strike=100.0)
 
     response = client.post(
         f"/locks/{lock.id}/exercise",
         headers=_auth_header(user),
-        json={"fare_cents": 10000},
     )
 
     assert response.status_code == 422
@@ -191,35 +196,66 @@ def test_early_exercise_rejects_fare_at_or_above_strike(client, db):
     assert lock.status == "open"
 
 
-def test_early_exercise_rejects_after_departure(client, db):
+def test_early_exercise_falls_back_to_stored_fare(client, db, monkeypatch):
+    monkeypatch.setattr(locks_router, "_provider_fare", lambda _lock: None)
+    monkeypatch.setattr(locks_router, "_stored_fare", lambda _lock, _db: 85.0)
+    user = _create_user(db, balance_cents=0)
+    lock = _open_lock(db, user, strike=100.0)
+
+    response = client.post(
+        f"/locks/{lock.id}/exercise",
+        headers=_auth_header(user),
+    )
+
+    assert response.status_code == 200
+    assert response.json()["settle_fare_cents"] == 8500
+    assert response.json()["payout_cents"] == 1500
+
+
+def test_early_exercise_rejects_when_fare_unavailable(client, db, monkeypatch):
+    _stub_provider_fare(monkeypatch, None)
+    user = _create_user(db)
+    lock = _open_lock(db, user)
+
+    response = client.post(
+        f"/locks/{lock.id}/exercise",
+        headers=_auth_header(user),
+    )
+
+    assert response.status_code == 422
+    assert response.json()["detail"]["code"] == "fare_unavailable"
+
+
+def test_early_exercise_rejects_after_departure(client, db, monkeypatch):
+    _stub_provider_fare(monkeypatch, 50.0)
     user = _create_user(db)
     lock = _open_lock(db, user, departure=date.today())
 
     response = client.post(
         f"/locks/{lock.id}/exercise",
         headers=_auth_header(user),
-        json={"fare_cents": 5000},
     )
 
     assert response.status_code == 422
     assert response.json()["detail"]["code"] == "past_exercise_window"
 
 
-def test_early_exercise_rejects_non_open_lock(client, db):
+def test_early_exercise_rejects_non_open_lock(client, db, monkeypatch):
+    _stub_provider_fare(monkeypatch, 50.0)
     user = _create_user(db)
     lock = _open_lock(db, user, status="expired")
 
     response = client.post(
         f"/locks/{lock.id}/exercise",
         headers=_auth_header(user),
-        json={"fare_cents": 5000},
     )
 
     assert response.status_code == 422
     assert response.json()["detail"]["code"] == "lock_not_open"
 
 
-def test_early_exercise_rejects_other_users_lock(client, db):
+def test_early_exercise_rejects_other_users_lock(client, db, monkeypatch):
+    _stub_provider_fare(monkeypatch, 50.0)
     owner = _create_user(db, email="owner@example.com")
     other = _create_user(db, email="other@example.com")
     lock = _open_lock(db, owner)
@@ -227,7 +263,6 @@ def test_early_exercise_rejects_other_users_lock(client, db):
     response = client.post(
         f"/locks/{lock.id}/exercise",
         headers=_auth_header(other),
-        json={"fare_cents": 5000},
     )
 
     assert response.status_code == 403
@@ -239,18 +274,15 @@ def test_early_exercise_requires_auth(client, db):
     user = _create_user(db)
     lock = _open_lock(db, user)
 
-    response = client.post(
-        f"/locks/{lock.id}/exercise",
-        json={"fare_cents": 5000},
-    )
+    response = client.post(f"/locks/{lock.id}/exercise")
     assert response.status_code == 401
 
 
-def test_early_exercise_not_found(client, db):
+def test_early_exercise_not_found(client, db, monkeypatch):
+    _stub_provider_fare(monkeypatch, 50.0)
     user = _create_user(db)
     response = client.post(
         "/locks/99999/exercise",
         headers=_auth_header(user),
-        json={"fare_cents": 5000},
     )
     assert response.status_code == 404
