@@ -8,9 +8,16 @@ class Settings(BaseSettings):
     postgres_db: str = "farelocker"
     postgres_host: str = "localhost"
     postgres_port: int = 5432
-    supabase_url: str | None = None
-    supabase_jwt_audience: str = "authenticated"
     cors_origins: str = "http://localhost:3000"
+
+    # Photon signup messaging
+    photon_messaging_url: str | None = None
+    photon_messaging_secret: str | None = None
+    photon_messaging_timeout_seconds: float = 3.0
+
+    # auth
+    secret_key: str = "change-me-in-prod"
+    access_token_expire_minutes: int = 60 * 24 * 7  # 7 days
 
     # pricing economics
     base_lambda: float = 0.30  # inventory loading
@@ -36,18 +43,9 @@ class Settings(BaseSettings):
 
     @property
     def allowed_origins(self) -> list[str]:
-        return [origin.strip() for origin in self.cors_origins.split(",") if origin.strip()]
-
-    @property
-    def supabase_issuer(self) -> str | None:
-        if self.supabase_url is None:
-            return None
-        return f"{self.supabase_url.rstrip('/')}/auth/v1"
-
-    @property
-    def supabase_jwks_url(self) -> str | None:
-        issuer = self.supabase_issuer
-        return f"{issuer}/.well-known/jwks.json" if issuer else None
+        return [
+            origin.strip() for origin in self.cors_origins.split(",") if origin.strip()
+        ]
 
 
 settings = Settings()

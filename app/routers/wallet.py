@@ -1,49 +1,120 @@
-"""Authenticated wallet endpoints. Fund settlement is intentionally a stub."""
+"""Authenticated wallet endpoints."""
 
-from typing import Annotated
+from typing import Annotated, Literal
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException, Query, status
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.auth import CurrentUser
 from app.db import get_db
-from app.models import Wallet
-from app.schemas import WalletAddFundsRequest, WalletAddFundsResponse, WalletResponse
+from app.models import LedgerEntry, User
+from app.schemas import (
+    LedgerEntryResponse,
+    WalletAddFundsRequest,
+    WalletAddFundsResponse,
+    WalletResponse,
+    WalletTransactionResponse,
+)
 
 router = APIRouter(prefix="/users", tags=["wallet"])
 DbSession = Annotated[Session, Depends(get_db)]
 
 
-@router.get("/{user_id}/wallet", response_model=WalletResponse)
-def get_wallet(user_id: str, user: CurrentUser, db: DbSession) -> WalletResponse:
-    """Return the signed-in user's wallet, creating an empty wallet if needed."""
-    # Never allow a caller to read another user's wallet by changing the path.
+def _require_self(user_id: int, user: User) -> None:
     if user_id != user.id:
-        from fastapi import HTTPException
-
-        raise HTTPException(status_code=403, detail="Cannot access another user's wallet")
-
-    wallet = db.get(Wallet, user.id)
-    if wallet is None:
-        wallet = Wallet(user_id=user.id, balance_cents=0)
-        db.add(wallet)
-        db.commit()
-        db.refresh(wallet)
-    return WalletResponse(user_id=wallet.user_id, balance_cents=wallet.balance_cents)
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Cannot access another user's wallet",
+        )
 
 
-@router.post("/{user_id}/wallet/add", response_model=WalletAddFundsResponse, status_code=501)
+@router.get("/{user_id}/wallet", response_model=WalletResponse)
+def get_wallet(user_id: int, user: CurrentUser, db: DbSession) -> WalletResponse:
+    _require_self(user_id, user)
+    row = db.get(User, user.id)
+    if row is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="User not found"
+        )
+    return WalletResponse(user_id=row.id, balance_cents=row.balance_cents)
+
+
+@router.post(
+    "/{user_id}/wallet/add",
+    response_model=WalletAddFundsResponse,
+    status_code=status.HTTP_200_OK,
+)
 def add_wallet_funds(
-    user_id: str,
+    user_id: int,
     request: WalletAddFundsRequest,
     user: CurrentUser,
+    db: DbSession,
 ) -> WalletAddFundsResponse:
-    """Declare the top-up contract; payment processing is not implemented."""
-    if user_id != user.id:
-        from fastapi import HTTPException
+    _require_self(user_id, user)
 
-        raise HTTPException(status_code=403, detail="Cannot modify another user's wallet")
-    # Do not credit funds until a payment provider confirms the transaction.
+    row = db.get(User, user.id)
+    if row is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="User not found"
+        )
+
+    entry = LedgerEntry(
+        user_id=row.id,
+        amount_cents=request.amount_cents,
+        entry_type="recharge",
+        note=request.note,
+        lock_id=None,
+    )
+
+    row.balance_cents += request.amount_cents
+    db.add(entry)
+    db.commit()
+    db.refresh(row)
+    db.refresh(entry)
+
     return WalletAddFundsResponse(
-        message=f"Top-up of {request.amount_cents} cents is not implemented yet."
+        user_id=row.id,
+        balance_cents=row.balance_cents,
+        credited_cents=request.amount_cents,
+        ledger_entry_id=entry.id,
+    )
+
+
+EntryType = Literal["recharge", "lock_fee", "payout", "withdrawal"]
+
+
+@router.get("/{user_id}/wallet/transactions", response_model=WalletTransactionResponse)
+def get_wallet_transactions(
+    user_id: int,
+    user: CurrentUser,
+    db: DbSession,
+    entry_type: EntryType | None = Query(default=None),
+) -> WalletTransactionResponse:
+    _require_self(user_id, user)
+
+    stmt = (
+        select(LedgerEntry)
+        .where(LedgerEntry.user_id == user.id)
+        .order_by(LedgerEntry.created_at.desc(), LedgerEntry.id.desc())
+    )
+
+    if entry_type is not None:
+        stmt = stmt.where(LedgerEntry.entry_type == entry_type)
+
+    rows = db.scalars(stmt).all()
+
+    return WalletTransactionResponse(
+        user_id=user.id,
+        transactions=[
+            LedgerEntryResponse(
+                id=row.id,
+                amount_cents=row.amount_cents,
+                entry_type=row.entry_type,
+                note=row.note,
+                lock_id=row.lock_id,
+                created_at=row.created_at,
+            )
+            for row in rows
+        ],
     )

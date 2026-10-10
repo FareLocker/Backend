@@ -1,8 +1,12 @@
-"""Trusted lock creation and automatic flight-day settlement."""
+"""Flight-day lock settlement.
+
+Purchase (quote -> debit wallet -> insert Lock) lives in app/routers/locks.py.
+"""
+
+from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
-from datetime import UTC, date, datetime
+from datetime import UTC, datetime
 from decimal import ROUND_HALF_UP, Decimal
 from math import isfinite
 from zoneinfo import ZoneInfo
@@ -10,8 +14,7 @@ from zoneinfo import ZoneInfo
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.constants import ROUTES
-from app.models import FareObservation, Lock
+from app.models import FareObservation, LedgerEntry, Lock, User
 from app.services.fastflight import search_flights
 from app.services.pricer import PAYOUT_CAP
 
@@ -22,77 +25,25 @@ ORIGIN_TIMEZONES = {
     "MIA": "America/New_York",
     "ORD": "America/Chicago",
 }
+
 logger = logging.getLogger(__name__)
 
 
-@dataclass(frozen=True)
-class PricedLockInput:
-    """A pricing snapshot supplied by trusted application code."""
-
-    origin: str
-    destination: str
-    departure_date: date
-    strike: float
-    fee: float
-    model_value: float
-    lam: float
-    sigma_used: float
-    flight_no: str | None = None
-
-
-def _flight_number(value: str | None) -> str | None:
+def _normalize_flight_number(value: str | None) -> str | None:
     if value is None:
         return None
-    number = "".join(value.upper().split())
-    if not number or not number.isalnum() or len(number) > 10:
-        raise ValueError("Flight number must be 1-10 alphanumeric characters")
-    return number
+    return "".join(value.upper().split()) or None
 
 
-def _route(origin: str, destination: str) -> tuple[str, str]:
-    route = (origin.strip().upper(), destination.strip().upper())
-    if route not in ROUTES:
-        raise ValueError("Unsupported route")
-    return route
-
-
-def create_lock(
-    db: Session, priced: PricedLockInput, *, bought_at: datetime | None = None
-) -> Lock:
-    """Persist a trusted USD economy, one-adult, one-way lock snapshot."""
-    origin, destination = _route(priced.origin, priced.destination)
-    bought_at = bought_at or datetime.now(UTC)
-    if bought_at.tzinfo is None or bought_at.utcoffset() is None:
-        raise ValueError("bought_at must be timezone-aware")
-    bought_at = bought_at.astimezone(UTC)
-    days = (
-        priced.departure_date
-        - bought_at.astimezone(ZoneInfo(ORIGIN_TIMEZONES[origin])).date()
-    ).days
-    if days < 1:
-        raise ValueError("Departure date must be after the purchase date")
-    for name in ("strike", "fee", "model_value", "lam", "sigma_used"):
-        value = getattr(priced, name)
-        if not isfinite(value) or value < 0 or (name == "strike" and value == 0):
-            raise ValueError(f"{name} must be a finite nonnegative amount")
-    lock = Lock(
-        route=f"{origin}-{destination}",
-        flight_no=_flight_number(priced.flight_no),
-        departure_date=priced.departure_date,
-        K=priced.strike,
-        T_days=days,
-        d0=days,
-        model_value=priced.model_value,
-        fee=priced.fee,
-        lam=priced.lam,
-        sigma_used=priced.sigma_used,
-        status="open",
-        bought_at=bought_at,
+def _compute_payout_dollars(strike: float, settle_fare: float) -> float:
+    """Put payoff capped at PAYOUT_CAP * K, rounded to cents."""
+    difference = Decimal(str(strike)) - Decimal(str(settle_fare))
+    payout_cap = Decimal(str(PAYOUT_CAP)) * Decimal(str(strike))
+    return float(
+        min(max(difference, Decimal(0)), payout_cap).quantize(
+            Decimal("0.01"), rounding=ROUND_HALF_UP
+        )
     )
-    db.add(lock)
-    db.commit()
-    db.refresh(lock)
-    return lock
 
 
 def _provider_fare(lock: Lock) -> float | None:
@@ -105,26 +56,33 @@ def _provider_fare(lock: Lock) -> float | None:
         seat="economy",
         currency="USD",
     )
-    prices = []
+    prices: list[float] = []
     for itinerary in results:
         price = getattr(itinerary, "price", None)
-        legs = getattr(itinerary, "flights", [])
+        legs = list(getattr(itinerary, "flights", []) or [])
         if price is None or not isfinite(price) or price <= 0 or not legs:
             continue
-        first = legs[0]
-        last = legs[-1]
+        first, last = legs[0], legs[-1]
         if (
             getattr(getattr(first, "from_airport", None), "code", None) != origin
             or getattr(getattr(last, "to_airport", None), "code", None) != destination
             or tuple(getattr(getattr(first, "departure", None), "date", ()))
-            != (lock.departure_date.year, lock.departure_date.month, lock.departure_date.day)
+            != (
+                lock.departure_date.year,
+                lock.departure_date.month,
+                lock.departure_date.day,
+            )
         ):
             continue
         if lock.flight_no is not None:
             if len(legs) != 1:
                 continue
-            numbers = [getattr(first, "flight_number", ""), *(getattr(first, "codeshares", []) or [])]
-            if lock.flight_no not in {"".join(str(n).upper().split()) for n in numbers}:
+            numbers = [
+                getattr(first, "flight_number", ""),
+                *(getattr(first, "codeshares", []) or []),
+            ]
+            normalized = {_normalize_flight_number(str(n)) for n in numbers}
+            if lock.flight_no not in normalized:
                 continue
         prices.append(float(price))
     return min(prices) if prices else None
@@ -146,7 +104,7 @@ def _stored_fare(lock: Lock, db: Session) -> float | None:
     for row in rows:
         if lock.flight_no is not None and (
             row.flight_no is None
-            or "".join(row.flight_no.upper().split()) != lock.flight_no
+            or _normalize_flight_number(row.flight_no) != lock.flight_no
         ):
             continue
         if isfinite(row.price) and row.price > 0:
@@ -154,46 +112,71 @@ def _stored_fare(lock: Lock, db: Session) -> float | None:
     return None
 
 
-def settle_lock(db: Session, lock_id: int, *, now: datetime | None = None) -> Lock | None:
+def _credit_payout(db: Session, lock: Lock, payout_dollars: float) -> None:
+    if payout_dollars <= 0:
+        return
+    user = db.get(User, lock.user_id)
+    if user is None:
+        logger.error(
+            "Lock %s has missing user_id=%s; payout not credited", lock.id, lock.user_id
+        )
+        return
+    payout_cents = int(round(payout_dollars * 100))
+    if payout_cents <= 0:
+        return
+    user.balance_cents += payout_cents
+    db.add(
+        LedgerEntry(
+            user_id=user.id,
+            amount_cents=payout_cents,
+            entry_type="payout",
+            note=f"FareLock payout for lock {lock.id}",
+            lock_id=lock.id,
+        )
+    )
+
+
+def settle_lock(
+    db: Session, lock_id: int, *, now: datetime | None = None
+) -> Lock | None:
     """Settle once on or after flight day; return None if the lock is not due."""
     now = now or datetime.now(UTC)
     if now.tzinfo is None or now.utcoffset() is None:
         raise ValueError("now must be timezone-aware")
     now = now.astimezone(UTC)
+
     statement = select(Lock).where(Lock.id == lock_id).with_for_update(skip_locked=True)
     lock = db.scalars(statement).first()
     if lock is None or lock.status not in {"open", "pending_verification"}:
         db.rollback()
         return None
+
     origin = lock.route.split("-")[0]
-    if now.astimezone(ZoneInfo(ORIGIN_TIMEZONES[origin])).date() < lock.departure_date:
+    local_today = now.astimezone(ZoneInfo(ORIGIN_TIMEZONES[origin])).date()
+    if local_today < lock.departure_date:
         db.rollback()
         return None
 
-    fare = None
-    # Past-day provider searches are unlikely to return a bookable fare.
-    if now.astimezone(ZoneInfo(ORIGIN_TIMEZONES[origin])).date() == lock.departure_date:
+    fare: float | None = None
+    # Past-day provider searches unlikely to return a bookable fare.
+    if local_today == lock.departure_date:
         try:
             fare = _provider_fare(lock)
         except Exception:
-            # A provider outage must not prevent the stored-fare fallback.
             logger.exception("Fare search failed for lock %s", lock.id)
+
     if fare is None:
         fare = _stored_fare(lock, db)
+
     if fare is None:
         lock.status = "pending_verification"
     else:
         lock.settle_fare = fare
-        difference = Decimal(str(lock.K)) - Decimal(str(fare))
-        payout_cap = Decimal(str(PAYOUT_CAP)) * Decimal(str(lock.K))
-        payout = float(
-            min(max(difference, Decimal(0)), payout_cap).quantize(
-                Decimal("0.01"), rounding=ROUND_HALF_UP
-            )
-        )
-        lock.payout = payout
+        lock.payout = _compute_payout_dollars(lock.K, fare)
         lock.settled_at = now
-        lock.status = "exercised" if payout > 0 else "expired"
+        lock.status = "exercised" if lock.payout > 0 else "expired"
+        _credit_payout(db, lock, lock.payout)
+
     db.commit()
     db.refresh(lock)
     return lock

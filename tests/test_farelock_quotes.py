@@ -6,7 +6,7 @@ import pytest
 from fastapi import HTTPException
 
 from app.routers import quotes
-from app.schemas import NaturalFareLockQuoteRequest
+from app.schemas import FareLockPriceRequest, NaturalFareLockQuoteRequest
 from app.services.natural_search import SearchParseError, parse_natural_farelock_quote
 
 
@@ -164,3 +164,123 @@ def test_farelock_endpoint_explains_missing_pricing_data(
         "reason": "historical_fare_data_unavailable",
         "minimum_observations": 30,
     }
+
+
+def test_farelock_price_endpoint_returns_cents_quote(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    departure = date.today() + timedelta(days=10)
+    pricing = MagicMock(
+        return_value=SimpleNamespace(K=420.0, fee=37.2, T_days=10)
+    )
+    monkeypatch.setattr(quotes, "quote_lock", pricing)
+    db = MagicMock()
+
+    response = quotes.farelock_price(
+        FareLockPriceRequest(
+            origin="atl",
+            destination="lax",
+            departure_date=departure,
+            flight_number="dl 123",
+            fare_cents=42000,
+        ),
+        db,
+    )
+
+    assert response.origin == "ATL"
+    assert response.destination == "LAX"
+    assert response.departure_date == departure
+    assert response.flight_number == "DL123"
+    assert response.fare_cents == 42000
+    assert response.fee_cents == 3720
+    assert response.max_payout_cents == 21000
+    assert response.protection_days == 10
+    assert response.currency == "USD"
+    pricing.assert_called_once_with(
+        route=("ATL", "LAX"),
+        flight_no="DL123",
+        _departure_date=departure,
+        S0=420.0,
+        d0=10,
+        dow=departure.weekday(),
+        db=db,
+    )
+
+
+def test_farelock_price_endpoint_enforces_quote_window() -> None:
+    departure = date.today() + timedelta(days=31)
+
+    with pytest.raises(HTTPException) as caught:
+        quotes.farelock_price(
+            FareLockPriceRequest(
+                origin="ATL",
+                destination="LAX",
+                departure_date=departure,
+                fare_cents=42000,
+            ),
+            MagicMock(),
+        )
+
+    assert caught.value.status_code == 422
+    assert caught.value.detail["code"] == "outside_quote_window"
+
+
+def test_farelock_price_endpoint_rejects_unsupported_route() -> None:
+    departure = date.today() + timedelta(days=10)
+
+    with pytest.raises(HTTPException) as caught:
+        quotes.farelock_price(
+            FareLockPriceRequest(
+                origin="XXX",
+                destination="YYY",
+                departure_date=departure,
+                fare_cents=42000,
+            ),
+            MagicMock(),
+        )
+
+    assert caught.value.status_code == 422
+    assert caught.value.detail["code"] == "unsupported_route"
+
+
+def test_farelock_price_endpoint_rejects_departure_too_soon() -> None:
+    with pytest.raises(HTTPException) as caught:
+        quotes.farelock_price(
+            FareLockPriceRequest(
+                origin="ATL",
+                destination="LAX",
+                departure_date=date.today(),
+                fare_cents=42000,
+            ),
+            MagicMock(),
+        )
+
+    assert caught.value.status_code == 422
+    assert caught.value.detail["code"] == "departure_too_soon"
+
+
+def test_farelock_price_endpoint_explains_missing_pricing_data(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    departure = date.today() + timedelta(days=10)
+    monkeypatch.setattr(
+        quotes,
+        "quote_lock",
+        MagicMock(side_effect=ValueError("no curve fit for ATL-LAX")),
+    )
+
+    with pytest.raises(HTTPException) as caught:
+        quotes.farelock_price(
+            FareLockPriceRequest(
+                origin="ATL",
+                destination="LAX",
+                departure_date=departure,
+                fare_cents=42000,
+            ),
+            MagicMock(),
+        )
+
+    assert caught.value.status_code == 422
+    assert caught.value.detail["code"] == "pricing_unavailable"
+    assert caught.value.detail["route"] == "ATL-LAX"
+    assert caught.value.detail["reason"] == "historical_fare_data_unavailable"

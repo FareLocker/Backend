@@ -1,16 +1,11 @@
 from datetime import date, datetime
 from typing import Literal
 
-from pydantic import BaseModel, Field, field_validator, model_validator
-
-
-class AuthenticatedUserResponse(BaseModel):
-    id: str
-    email: str | None = None
+from pydantic import BaseModel, EmailStr, Field, field_validator, model_validator
 
 
 class WalletResponse(BaseModel):
-    user_id: str
+    user_id: int
     balance_cents: int
     currency: Literal["USD"] = "USD"
 
@@ -18,11 +13,15 @@ class WalletResponse(BaseModel):
 class WalletAddFundsRequest(BaseModel):
     # Skeleton only: payment authorization and settlement are not implemented.
     amount_cents: int = Field(gt=0)
+    note: str | None = Field(default=None, max_length=200)
 
 
 class WalletAddFundsResponse(BaseModel):
-    status: Literal["not_implemented"] = "not_implemented"
-    message: str
+    user_id: int
+    balance_cents: int
+    credited_cents: int
+    ledger_entry_id: int
+    currency: Literal["USD"] = "USD"
 
 
 class FareHistoryPoint(BaseModel):
@@ -33,6 +32,7 @@ class FareHistoryPoint(BaseModel):
 class FareDetailResponse(BaseModel):
     fare: "FareSearchResultResponse"
     history: list[FareHistoryPoint]
+    history_source: Literal["google", "local"]
 
 
 class FareEndpointResponse(BaseModel):
@@ -76,9 +76,7 @@ class NaturalFlightSearchRequest(BaseModel):
 
     model_config = {
         "json_schema_extra": {
-            "examples": [
-                {"query": "flights from ATL to LAX on 2026-11-15"}
-            ]
+            "examples": [{"query": "flights from ATL to LAX on 2026-11-15"}]
         }
     }
 
@@ -119,7 +117,7 @@ class FareLockQuoteResponse(BaseModel):
 
 class FlightSearchRequest(BaseModel):
     """Request model for flight search.
-    
+
     Attributes:
         origin: Three-letter origin airport code (e.g., 'JFK').
         destination: Three-letter destination airport code (e.g., 'LAX').
@@ -134,6 +132,7 @@ class FlightSearchRequest(BaseModel):
         flight_number: Optional specific flight number to filter results.
         context: Additional contextual information for the search request.
     """
+
     origin: str
     destination: str
     departure_date: date
@@ -167,10 +166,7 @@ class FlightSearchRequest(BaseModel):
     @model_validator(mode="after")
     def validate_search_constraints(self) -> "FlightSearchRequest":
         passenger_count = (
-            self.adults
-            + self.children
-            + self.infants_in_seat
-            + self.infants_on_lap
+            self.adults + self.children + self.infants_in_seat + self.infants_on_lap
         )
         if passenger_count > 9:
             raise ValueError("A search can include at most 9 passengers")
@@ -241,3 +237,128 @@ class MarketDetail(BaseModel):
     observations: list[MarketFare]
     curve: MarketCurve | None
     volatility: MarketVolatility | None
+
+
+class RegisterRequest(BaseModel):
+    email: EmailStr
+    password: str = Field(min_length=8, max_length=72)
+    first_name: str = Field(min_length=1, max_length=50)
+    last_name: str = Field(min_length=1, max_length=50)
+    phone_number: str | None = Field(default=None, max_length=20)
+
+
+class LoginRequest(BaseModel):
+    identifier: str = Field(min_length=1, max_length=100)  # email or phone
+    password: str
+
+
+class TokenResponse(BaseModel):
+    access_token: str
+    token_type: str = "bearer"
+
+
+class AuthenticatedUserResponse(BaseModel):
+    id: int
+    email: str
+    first_name: str
+    last_name: str
+    balance_cents: int
+
+
+class GooglePriceHistoryPoint(BaseModel):
+    date: date
+    amount_cents: int
+
+
+class GooglePriceHistoryResponse(BaseModel):
+    flight_number: str
+    departure_date: date
+    origin: str
+    lowest_price: int | None
+    price_level: Literal["low", "typical", "high", ""]
+    typical_price_range: tuple[int, int] | None
+    estimated_savings: int | None = None
+    destination_city: str | None = None
+    price_history: list[GooglePriceHistoryPoint]
+
+
+class FareLockPriceRequest(BaseModel):
+    origin: str = Field(min_length=3, max_length=3)
+    destination: str = Field(min_length=3, max_length=3)
+    departure_date: date
+    flight_number: str | None = None
+    fare_cents: int = Field(gt=0)
+
+
+class FareLockPriceResponse(BaseModel):
+    origin: str
+    destination: str
+    departure_date: date
+    flight_number: str | None
+    fare_cents: int
+    fee_cents: int
+    max_payout_cents: int
+    protection_days: int
+    currency: Literal["USD"] = "USD"
+
+
+class LedgerEntryResponse(BaseModel):
+    id: int
+    amount_cents: int
+    entry_type: str  # recharge | lock_fee | payout | withdrawal
+    note: str | None
+    lock_id: int | None
+    created_at: datetime
+
+
+class WalletTransactionResponse(BaseModel):
+    user_id: int
+    transactions: list[LedgerEntryResponse]
+
+
+class LockPurchaseResponse(BaseModel):
+    id: int
+    origin: str
+    destination: str
+    departure_date: date
+    flight_number: str | None
+    strike_cents: int
+    fee_cents: int
+    max_payout_cents: int
+    protection_days: int
+    status: str
+    balance_cents: int
+    currency: Literal["USD"] = "USD"
+
+
+class LockExerciseResponse(BaseModel):
+    id: int
+    status: str
+    strike_cents: int
+    settle_fare_cents: int
+    payout_cents: int
+    fee_cents: int
+    balance_cents: int
+    currency: Literal["USD"] = "USD"
+
+
+class LockResponse(BaseModel):
+    id: int
+    origin: str
+    destination: str
+    departure_date: date
+    flight_number: str | None
+    strike_cents: int
+    fee_cents: int
+    max_payout_cents: int
+    protection_days: int
+    status: str
+    bought_at: datetime
+    settled_at: datetime | None
+    settle_fare_cents: int | None
+    payout_cents: int | None
+    currency: Literal["USD"] = "USD"
+
+
+class LockListResponse(BaseModel):
+    locks: list[LockResponse]

@@ -1,67 +1,58 @@
-"""Supabase access-token verification for protected API routes."""
+"""Local email/password auth: bcrypt hashes + HS256 JWTs."""
 
-from dataclasses import dataclass
-from functools import lru_cache
+from __future__ import annotations
+
+from datetime import UTC, datetime, timedelta
 from typing import Annotated, Any
 
+import bcrypt
 import jwt
 from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from sqlalchemy.orm import Session
 
 from app.config import settings
+from app.db import get_db
+from app.models import User
 
-SUPPORTED_ALGORITHMS = ("ES256", "RS256")
 bearer_scheme = HTTPBearer(auto_error=False)
+ALGORITHM = "HS256"
 
 
-@dataclass(frozen=True)
-class AuthenticatedUser:
-    id: str
-    email: str | None
-    claims: dict[str, Any]
+def hash_password(password: str) -> str:
+    return bcrypt.hashpw(password.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
 
 
-class AuthConfigurationError(RuntimeError):
-    pass
-
-
-@lru_cache(maxsize=4)
-def _jwks_client(url: str) -> jwt.PyJWKClient:
-    return jwt.PyJWKClient(url, cache_keys=True, lifespan=600)
-
-
-def verify_access_token(token: str) -> AuthenticatedUser:
-    """Verify a Supabase asymmetric JWT and return its authenticated identity."""
-    issuer = settings.supabase_issuer
-    jwks_url = settings.supabase_jwks_url
-    if issuer is None or jwks_url is None:
-        raise AuthConfigurationError("Supabase authentication is not configured")
-
+def verify_password(password: str, password_hash: str) -> bool:
     try:
-        signing_key = _jwks_client(jwks_url).get_signing_key_from_jwt(token)
-        claims = jwt.decode(
-            token,
-            signing_key.key,
-            algorithms=SUPPORTED_ALGORITHMS,
-            audience=settings.supabase_jwt_audience,
-            issuer=issuer,
-            options={"require": ["exp", "sub", "role"]},
-        )
-    except jwt.PyJWTError as error:
-        raise ValueError("Invalid Supabase access token") from error
+        return bcrypt.checkpw(password.encode("utf-8"), password_hash.encode("utf-8"))
+    except ValueError:
+        return False
 
-    user_id = claims.get("sub")
-    if not isinstance(user_id, str) or not user_id:
-        raise ValueError("Supabase access token is missing a subject")
-    if claims.get("role") != "authenticated":
-        raise ValueError("Supabase access token is not an authenticated user token")
 
-    email = claims.get("email")
-    return AuthenticatedUser(
-        id=user_id,
-        email=email if isinstance(email, str) else None,
-        claims=claims,
+def create_access_token(user_id: int, *, extra: dict[str, Any] | None = None) -> str:
+    expire = datetime.now(UTC) + timedelta(
+        minutes=settings.access_token_expire_minutes
     )
+    payload: dict[str, Any] = {"sub": str(user_id), "exp": expire}
+    if extra:
+        payload.update(extra)
+    return jwt.encode(payload, settings.secret_key, algorithm=ALGORITHM)
+
+
+def decode_access_token(token: str) -> int:
+    try:
+        claims = jwt.decode(token, settings.secret_key, algorithms=[ALGORITHM])
+    except jwt.PyJWTError as error:
+        raise ValueError("Invalid access token") from error
+
+    sub = claims.get("sub")
+    if sub is None:
+        raise ValueError("Token missing subject")
+    try:
+        return int(sub)
+    except (TypeError, ValueError) as error:
+        raise ValueError("Token subject is not a user id") from error
 
 
 def _unauthorized() -> HTTPException:
@@ -74,18 +65,19 @@ def _unauthorized() -> HTTPException:
 
 def get_current_user(
     credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer_scheme)],
-) -> AuthenticatedUser:
+    db: Annotated[Session, Depends(get_db)],
+) -> User:
     if credentials is None:
         raise _unauthorized()
     try:
-        return verify_access_token(credentials.credentials)
-    except AuthConfigurationError as error:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Authentication is not configured",
-        ) from error
+        user_id = decode_access_token(credentials.credentials)
     except ValueError as error:
         raise _unauthorized() from error
 
+    user = db.get(User, user_id)
+    if user is None:
+        raise _unauthorized()
+    return user
 
-CurrentUser = Annotated[AuthenticatedUser, Depends(get_current_user)]
+
+CurrentUser = Annotated[User, Depends(get_current_user)]

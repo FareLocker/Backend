@@ -1,56 +1,48 @@
 # FareLocker API
 
-## Database setup
+## Setup
 
-FareLocker uses PostgreSQL for local development. With PostgreSQL running on
-`localhost:5432`, run this command from `Backend`:
+Requires Python 3.12+, [uv](https://docs.astral.sh/uv/), and PostgreSQL.
 
-```powershell
-uv run python scripts/setup_postgres.py
+```bash
+cp .env.example .env
 ```
 
-The script prompts for the PostgreSQL `postgres` administrator password. It
-creates the `farelocker_app` role and `farelocker` database, saves the app's
-connection URL in `Backend/.env`, and checks that the app can connect. It keeps
-other settings already in `.env`. Re-running it preserves an existing database
-and synchronizes the app role's password with `.env`.
+Edit `.env` before running:
 
-If authentication fails, enter the password assigned to the PostgreSQL
-`postgres` role when the server was installed. The pgAdmin master password and
-your Windows password are separate credentials. The script allows three tries.
+| Variable | Purpose |
+| --- | --- |
+| `POSTGRES_*` | Database connection (defaults match local Docker/`farelocker` DB) |
+| `SECRET_KEY` | HS256 JWT signing key — use a long random string (≥32 bytes) |
+| `SCRAPER_ENABLED` | Enable background fare scraping when `true` |
+| `HOST_UID` / `HOST_GID` | Optional host user mapping for Docker volume permissions |
 
-Run the API from `Backend`:
+Optional overrides (see `app/config.py`): `CORS_ORIGINS`, `ACCESS_TOKEN_EXPIRE_MINUTES`, `SETTLEMENT_INTERVAL_MINUTES`, `FARES_CSV`.
 
-```powershell
+```bash
+uv sync
 uv run uvicorn app.main:app --reload
 ```
 
+The API creates tables from `app/models.py` on startup. Alembic is present but not required for local schema bootstrap.
+
 ## Authentication
 
-FareLocker verifies Supabase access tokens locally through the project's JWKS
-endpoint. Create a Supabase project with an asymmetric JWT signing key and
-enable Email authentication. Add these values to `Backend/.env`:
+Auth is local email/password (bcrypt) with HS256 JWTs. No Supabase.
 
-```dotenv
-SUPABASE_URL=https://your-project-ref.supabase.co
-SUPABASE_JWT_AUDIENCE=authenticated
-CORS_ORIGINS=http://localhost:3000
-```
+| Method | Path | Notes |
+| --- | --- | --- |
+| `POST` | `/auth/register` | Body: `email`, `password`, `first_name`, `last_name`, optional `phone_number`. Returns `{ access_token, token_type }`. |
+| `POST` | `/auth/login` | Body: `identifier` (email **or** phone) + `password`. Returns a bearer token. |
+| `GET` | `/auth/me` | Requires `Authorization: Bearer <access_token>`. |
 
-The web client signs users in through Supabase Auth, then sends the returned
-access token as `Authorization: Bearer <access_token>`. `GET /auth/me` verifies
-that token and returns the signed-in user's identity. Existing search and
-market endpoints remain public.
-
-The API creates tables defined in `app/models.py` when it starts. The current
-project does not have a working Alembic configuration; do not use `alembic
-upgrade head` for this schema.
+Search and market endpoints stay public. Wallet routes require a valid bearer token and only allow access to the signed-in user's balance (`User.balance_cents`).
 
 ## Lock settlement worker
 
 Run a separate process alongside the API:
 
-```powershell
+```bash
 uv run python -m app.jobs
 ```
 

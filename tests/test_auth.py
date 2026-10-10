@@ -1,83 +1,250 @@
+"""Local bcrypt + JWT auth."""
+
+from __future__ import annotations
+
 import pytest
 from fastapi.testclient import TestClient
-import jwt
+from sqlalchemy import create_engine
+from sqlalchemy.orm import Session, sessionmaker
+from sqlalchemy.pool import StaticPool
 
-from app import auth
-from app.auth import AuthenticatedUser, get_current_user
+from app.auth import (
+    create_access_token,
+    decode_access_token,
+    hash_password,
+    verify_password,
+)
+from app.config import settings
+from app.db import get_db
 from app.main import app
+from app.models import Base, User
+from app.routers import auth as auth_router
 
 
 @pytest.fixture
-def client():
-    with TestClient(app) as test_client:
-        yield test_client
-
-
-def test_me_returns_identity_for_a_verified_user(client):
-    app.dependency_overrides[get_current_user] = lambda: AuthenticatedUser(
-        id="3e54e3eb-18f5-4bca-aabf-87197acd33f0",
-        email="traveler@example.com",
-        claims={"role": "authenticated"},
+def db() -> Session:
+    engine = create_engine(
+        "sqlite://",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
     )
+    Base.metadata.create_all(engine)
+    session = sessionmaker(bind=engine, autoflush=False, autocommit=False)()
     try:
-        response = client.get("/auth/me", headers={"Authorization": "Bearer valid-token"})
+        yield session
     finally:
-        app.dependency_overrides.pop(get_current_user, None)
+        session.close()
 
+
+@pytest.fixture
+def client(db: Session):
+    def override_get_db():
+        try:
+            yield db
+        finally:
+            pass
+
+    app.dependency_overrides[get_db] = override_get_db
+    yield TestClient(app)
+    app.dependency_overrides.clear()
+
+
+@pytest.fixture(autouse=True)
+def _test_secret(monkeypatch):
+    monkeypatch.setattr(settings, "secret_key", "test-secret-key")
+    monkeypatch.setattr(settings, "access_token_expire_minutes", 60)
+
+
+REGISTER = {
+    "email": "traveler@example.com",
+    "password": "password123",
+    "first_name": "Ada",
+    "last_name": "Lovelace",
+    "phone_number": "+15551234567",
+}
+
+
+def test_hash_and_verify_password_roundtrip():
+    hashed = hash_password("password123")
+    assert hashed != "password123"
+    assert verify_password("password123", hashed)
+    assert not verify_password("wrong", hashed)
+
+
+def test_access_token_roundtrip():
+    token = create_access_token(42)
+    assert decode_access_token(token) == 42
+
+
+def test_register_returns_token_and_creates_user(client, db):
+    response = client.post("/auth/register", json=REGISTER)
+    assert response.status_code == 201
+    body = response.json()
+    assert body["token_type"] == "bearer"
+    assert decode_access_token(body["access_token"]) == db.query(User).one().id
+
+    user = db.query(User).one()
+    assert user.email == "traveler@example.com"
+    assert user.phone_number == "+15551234567"
+    assert user.balance_cents == 0
+    assert verify_password("password123", user.hashed_password)
+
+
+def test_register_sends_welcome_when_phone_is_supplied(client, monkeypatch):
+    sent: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        auth_router,
+        "_send_signup_welcome",
+        lambda phone_number, first_name: sent.append((phone_number, first_name)),
+    )
+
+    response = client.post("/auth/register", json=REGISTER)
+
+    assert response.status_code == 201
+    assert sent == [("+15551234567", "Ada")]
+
+
+def test_register_does_not_send_welcome_without_phone(client, monkeypatch):
+    sent: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        auth_router,
+        "_send_signup_welcome",
+        lambda phone_number, first_name: sent.append((phone_number, first_name)),
+    )
+
+    response = client.post(
+        "/auth/register", json={**REGISTER, "phone_number": None}
+    )
+
+    assert response.status_code == 201
+    assert sent == []
+
+
+def test_signup_welcome_uses_authenticated_photon_request(monkeypatch):
+    captured: dict[str, object] = {}
+
+    class Response:
+        status = 200
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+    def fake_urlopen(request, timeout):
+        captured["url"] = request.full_url
+        captured["body"] = request.data
+        captured["secret"] = request.get_header("X-photon-internal-secret")
+        captured["timeout"] = timeout
+        return Response()
+
+    monkeypatch.setattr(settings, "photon_messaging_url", "http://photon.test:8787")
+    monkeypatch.setattr(settings, "photon_messaging_secret", "shared-secret")
+    monkeypatch.setattr(auth_router, "urlopen", fake_urlopen)
+
+    auth_router._send_signup_welcome("+15551234567", "Ada")
+
+    assert captured == {
+        "url": "http://photon.test:8787/send-welcome",
+        "body": b'{"phone_number": "+15551234567", "first_name": "Ada"}',
+        "secret": "shared-secret",
+        "timeout": settings.photon_messaging_timeout_seconds,
+    }
+
+
+def test_register_normalizes_email(client, db):
+    payload = {**REGISTER, "email": "  Traveler@Example.COM "}
+    # EmailStr may reject spaces — if so, use without spaces:
+    payload = {**REGISTER, "email": "Traveler@Example.COM"}
+    response = client.post("/auth/register", json=payload)
+    assert response.status_code == 201
+    assert db.query(User).one().email == "traveler@example.com"
+
+
+def test_register_rejects_duplicate_email(client):
+    assert client.post("/auth/register", json=REGISTER).status_code == 201
+    again = client.post(
+        "/auth/register",
+        json={**REGISTER, "phone_number": "+15557654321"},
+    )
+    assert again.status_code == 409
+    assert again.json()["detail"] == "Email already registered"
+
+
+def test_register_rejects_duplicate_phone(client):
+    assert client.post("/auth/register", json=REGISTER).status_code == 201
+    again = client.post(
+        "/auth/register",
+        json={**REGISTER, "email": "other@example.com"},
+    )
+    assert again.status_code == 409
+    assert again.json()["detail"] == "Phone number already registered"
+
+
+def test_login_with_email(client):
+    client.post("/auth/register", json=REGISTER)
+    response = client.post(
+        "/auth/login",
+        json={"identifier": "traveler@example.com", "password": "password123"},
+    )
+    assert response.status_code == 200
+    assert "access_token" in response.json()
+
+
+def test_login_with_phone(client):
+    client.post("/auth/register", json=REGISTER)
+    response = client.post(
+        "/auth/login",
+        json={"identifier": "+15551234567", "password": "password123"},
+    )
+    assert response.status_code == 200
+
+
+def test_login_rejects_bad_password(client):
+    client.post("/auth/register", json=REGISTER)
+    response = client.post(
+        "/auth/login",
+        json={"identifier": "traveler@example.com", "password": "wrong-password"},
+    )
+    assert response.status_code == 401
+    assert response.json()["detail"] == "Invalid credentials"
+
+
+def test_login_rejects_unknown_identifier(client):
+    response = client.post(
+        "/auth/login",
+        json={"identifier": "nobody@example.com", "password": "password123"},
+    )
+    assert response.status_code == 401
+
+
+def test_me_returns_user(client):
+    token = client.post("/auth/register", json=REGISTER).json()["access_token"]
+    response = client.get(
+        "/auth/me",
+        headers={"Authorization": f"Bearer {token}"},
+    )
     assert response.status_code == 200
     assert response.json() == {
-        "id": "3e54e3eb-18f5-4bca-aabf-87197acd33f0",
+        "id": 1,
         "email": "traveler@example.com",
+        "first_name": "Ada",
+        "last_name": "Lovelace",
+        "balance_cents": 0,
     }
 
 
 @pytest.mark.parametrize("headers", [{}, {"Authorization": "Basic abc"}])
-def test_me_rejects_missing_or_malformed_bearer_tokens(client, headers):
+def test_me_rejects_missing_or_malformed_bearer(client, headers):
     response = client.get("/auth/me", headers=headers)
     assert response.status_code == 401
-    assert response.headers["www-authenticate"] == "Bearer"
+    assert response.headers.get("www-authenticate") == "Bearer"
 
 
-def test_verifier_requires_asymmetric_algorithms_and_authenticated_role(monkeypatch):
-    class SigningKey:
-        key = object()
-
-    class JwksClient:
-        def get_signing_key_from_jwt(self, _token):
-            return SigningKey()
-
-    decoded_claims = {
-        "sub": "3e54e3eb-18f5-4bca-aabf-87197acd33f0",
-        "email": "traveler@example.com",
-        "role": "authenticated",
-    }
-    decode_kwargs = {}
-
-    def decode(*_args, **kwargs):
-        decode_kwargs.update(kwargs)
-        return decoded_claims
-
-    monkeypatch.setattr(auth.settings, "supabase_url", "https://project.supabase.co")
-    monkeypatch.setattr(auth, "_jwks_client", lambda _url: JwksClient())
-    monkeypatch.setattr(auth.jwt, "decode", decode)
-
-    user = auth.verify_access_token("valid-token")
-    assert user.id == decoded_claims["sub"]
-    assert user.email == decoded_claims["email"]
-    assert decode_kwargs["algorithms"] == ("ES256", "RS256")
-
-    decoded_claims["role"] = "anon"
-    with pytest.raises(ValueError, match="not an authenticated"):
-        auth.verify_access_token("anon-token")
-
-
-def test_verifier_rejects_expired_tokens(monkeypatch):
-    class JwksClient:
-        def get_signing_key_from_jwt(self, _token):
-            raise jwt.ExpiredSignatureError("expired")
-
-    monkeypatch.setattr(auth.settings, "supabase_url", "https://project.supabase.co")
-    monkeypatch.setattr(auth, "_jwks_client", lambda _url: JwksClient())
-
-    with pytest.raises(ValueError, match="Invalid Supabase access token"):
-        auth.verify_access_token("expired-token")
+def test_me_rejects_invalid_token(client):
+    response = client.get(
+        "/auth/me",
+        headers={"Authorization": "Bearer not-a-real-token"},
+    )
+    assert response.status_code == 401
