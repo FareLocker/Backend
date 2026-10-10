@@ -5,7 +5,8 @@
   "type": "module",
   "scripts": {
     "start": "bun src/index.ts",
-    "dev": "bun --watch src/index.ts"
+    "dev": "bun --watch src/index.ts",
+    "test": "bun test"
   },
   "dependencies": {
     "spectrum-ts": "^12.10.1"
