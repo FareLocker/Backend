@@ -106,13 +106,23 @@ def _open_lock(
     return lock
 
 
-def _stub_provider_fare(monkeypatch, dollars: float | None):
-    monkeypatch.setattr(locks_router, "_provider_fare", lambda _lock: dollars)
-    monkeypatch.setattr(locks_router, "_stored_fare", lambda _lock, _db: None)
+def _stub_current_fare(
+    monkeypatch, dollars: float | None, *, source: str = "provider"
+) -> None:
+    if dollars is None:
+        monkeypatch.setattr(
+            locks_router, "_resolve_current_fare", lambda _lock, _db: (None, None)
+        )
+        return
+    monkeypatch.setattr(
+        locks_router,
+        "_resolve_current_fare",
+        lambda _lock, _db: (dollars, source),
+    )
 
 
 def test_early_exercise_credits_payout_when_fare_below_strike(client, db, monkeypatch):
-    _stub_provider_fare(monkeypatch, 80.0)
+    _stub_current_fare(monkeypatch, 80.0)
     user = _create_user(db, balance_cents=500)
     lock = _open_lock(db, user, strike=100.0, fee=15.0)
 
@@ -150,7 +160,7 @@ def test_early_exercise_credits_payout_when_fare_below_strike(client, db, monkey
 
 
 def test_early_exercise_allows_payout_smaller_than_fee(client, db, monkeypatch):
-    _stub_provider_fare(monkeypatch, 95.0)
+    _stub_current_fare(monkeypatch, 95.0)
     user = _create_user(db, balance_cents=0)
     lock = _open_lock(db, user, strike=100.0, fee=15.0)
 
@@ -167,7 +177,7 @@ def test_early_exercise_allows_payout_smaller_than_fee(client, db, monkeypatch):
 
 
 def test_early_exercise_caps_payout_at_half_strike(client, db, monkeypatch):
-    _stub_provider_fare(monkeypatch, 1.0)
+    _stub_current_fare(monkeypatch, 1.0)
     user = _create_user(db, balance_cents=0)
     lock = _open_lock(db, user, strike=100.0)
 
@@ -181,7 +191,7 @@ def test_early_exercise_caps_payout_at_half_strike(client, db, monkeypatch):
 
 
 def test_early_exercise_rejects_fare_at_or_above_strike(client, db, monkeypatch):
-    _stub_provider_fare(monkeypatch, 100.0)
+    _stub_current_fare(monkeypatch, 100.0)
     user = _create_user(db)
     lock = _open_lock(db, user, strike=100.0)
 
@@ -197,8 +207,7 @@ def test_early_exercise_rejects_fare_at_or_above_strike(client, db, monkeypatch)
 
 
 def test_early_exercise_falls_back_to_stored_fare(client, db, monkeypatch):
-    monkeypatch.setattr(locks_router, "_provider_fare", lambda _lock: None)
-    monkeypatch.setattr(locks_router, "_stored_fare", lambda _lock, _db: 85.0)
+    _stub_current_fare(monkeypatch, 85.0, source="stored")
     user = _create_user(db, balance_cents=0)
     lock = _open_lock(db, user, strike=100.0)
 
@@ -213,7 +222,7 @@ def test_early_exercise_falls_back_to_stored_fare(client, db, monkeypatch):
 
 
 def test_early_exercise_rejects_when_fare_unavailable(client, db, monkeypatch):
-    _stub_provider_fare(monkeypatch, None)
+    _stub_current_fare(monkeypatch, None)
     user = _create_user(db)
     lock = _open_lock(db, user)
 
@@ -227,7 +236,7 @@ def test_early_exercise_rejects_when_fare_unavailable(client, db, monkeypatch):
 
 
 def test_early_exercise_rejects_after_departure(client, db, monkeypatch):
-    _stub_provider_fare(monkeypatch, 50.0)
+    _stub_current_fare(monkeypatch, 50.0)
     user = _create_user(db)
     lock = _open_lock(db, user, departure=date.today())
 
@@ -241,7 +250,7 @@ def test_early_exercise_rejects_after_departure(client, db, monkeypatch):
 
 
 def test_early_exercise_rejects_non_open_lock(client, db, monkeypatch):
-    _stub_provider_fare(monkeypatch, 50.0)
+    _stub_current_fare(monkeypatch, 50.0)
     user = _create_user(db)
     lock = _open_lock(db, user, status="expired")
 
@@ -255,7 +264,7 @@ def test_early_exercise_rejects_non_open_lock(client, db, monkeypatch):
 
 
 def test_early_exercise_rejects_other_users_lock(client, db, monkeypatch):
-    _stub_provider_fare(monkeypatch, 50.0)
+    _stub_current_fare(monkeypatch, 50.0)
     owner = _create_user(db, email="owner@example.com")
     other = _create_user(db, email="other@example.com")
     lock = _open_lock(db, owner)
@@ -279,7 +288,7 @@ def test_early_exercise_requires_auth(client, db):
 
 
 def test_early_exercise_not_found(client, db, monkeypatch):
-    _stub_provider_fare(monkeypatch, 50.0)
+    _stub_current_fare(monkeypatch, 50.0)
     user = _create_user(db)
     response = client.post(
         "/locks/99999/exercise",

@@ -370,3 +370,16 @@ class WalletWithdrawResponse(BaseModel):
     debited_cents: int
     ledger_entry_id: int
     currency: Literal["USD"] = "USD"
+
+
+class LockMarkToMarketResponse(BaseModel):
+    id: int
+    status: str
+    strike_cents: int
+    current_fare_cents: int | None
+    intrinsic_payout_cents: int | None
+    max_payout_cents: int
+    in_the_money: bool | None
+    exercisable: bool
+    fare_source: Literal["provider", "stored"] | None
+    currency: Literal["USD"] = "USD"

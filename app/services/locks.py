@@ -9,6 +9,7 @@ import logging
 from datetime import UTC, datetime
 from decimal import ROUND_HALF_UP, Decimal
 from math import isfinite
+from typing import Literal
 from zoneinfo import ZoneInfo
 
 from sqlalchemy import select
@@ -25,6 +26,8 @@ ORIGIN_TIMEZONES = {
     "MIA": "America/New_York",
     "ORD": "America/Chicago",
 }
+
+FareSource = Literal["provider", "stored"]
 
 logger = logging.getLogger(__name__)
 
@@ -180,3 +183,19 @@ def settle_lock(
     db.commit()
     db.refresh(lock)
     return lock
+
+
+def _resolve_current_fare(
+    lock: Lock, db: Session
+) -> tuple[float | None, FareSource | None]:
+    """Live provider fare, then stored observation after purchase."""
+    try:
+        provider = _provider_fare(lock)
+    except Exception:
+        provider = None
+    if provider is not None:
+        return provider, "provider"
+    stored = _stored_fare(lock, db)
+    if stored is not None:
+        return stored, "stored"
+    return None, None
