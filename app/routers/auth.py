@@ -1,5 +1,6 @@
 import json
 import logging
+import re
 from typing import Annotated
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
@@ -22,6 +23,26 @@ from app.schemas import (
 router = APIRouter(prefix="/auth", tags=["auth"])
 DbSession = Annotated[Session, Depends(get_db)]
 logger = logging.getLogger(__name__)
+
+
+def _normalize_phone_number(phone_number: str) -> str | None:
+    """Return an E.164 number for the U.S./Canada formats accepted by signup.
+
+    International numbers must already be supplied in E.164 form. A country
+    cannot be inferred reliably from an unprefixed international number.
+    """
+    value = phone_number.strip()
+    if re.fullmatch(r"\+[1-9]\d{7,14}", value):
+        return value
+
+    # Let people enter familiar North American formats such as
+    # "(404) 555-0123" or "1-404-555-0123".
+    digits = re.sub(r"\D", "", value)
+    if len(digits) == 10:
+        return f"+1{digits}"
+    if len(digits) == 11 and digits.startswith("1"):
+        return f"+{digits}"
+    return None
 
 
 def _send_signup_welcome(phone_number: str, first_name: str) -> None:
@@ -85,7 +106,17 @@ def register(
             status_code=status.HTTP_409_CONFLICT, detail="Email already registered"
         )
 
-    phone = body.phone_number.strip() if body.phone_number else None  # type: ignore[union-attr]
+    phone = None
+    if body.phone_number:
+        phone = _normalize_phone_number(body.phone_number)
+        if phone is None:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail=(
+                    "Enter a 10-digit U.S./Canada phone number or an "
+                    "international number in E.164 format (for example, +15551234567)"
+                ),
+            )
 
     if phone is not None and _user_by_phone(db, phone) is not None:
         raise HTTPException(
@@ -97,7 +128,7 @@ def register(
         email=email,
         first_name=body.first_name.strip(),
         last_name=body.last_name.strip(),
-        phone_number=(body.phone_number.strip() if body.phone_number else None),
+        phone_number=phone,
         hashed_password=hash_password(body.password),
         balance_cents=0,
     )
