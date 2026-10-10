@@ -330,12 +330,6 @@ class LockPurchaseResponse(BaseModel):
     currency: Literal["USD"] = "USD"
 
 
-class LockExerciseRequest(BaseModel):
-    """Current market fare used to exercise the put (must be below strike)."""
-
-    fare_cents: int = Field(gt=0)
-
-
 class LockExerciseResponse(BaseModel):
     id: int
     status: str
