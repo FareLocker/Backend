@@ -66,7 +66,7 @@ def test_creation_is_internal_and_validated(sessions):
         assert db.query(Lock).count() == 1
 
 
-def test_provider_matching_payout_and_repeat_run(sessions, monkeypatch):
+def test_provider_matching_price_drop_payout_and_repeat_run(sessions, monkeypatch):
     with sessions() as db:
         lock_id = locks.create_lock(db, priced(), bought_at=BOUGHT).id
     monkeypatch.setattr(locks, "search_flights", lambda **_: [
@@ -74,14 +74,14 @@ def test_provider_matching_payout_and_repeat_run(sessions, monkeypatch):
         itinerary(300, number="DL123", legs=2),
         itinerary(None),
         itinerary(160, number="DL123", day=DEPARTURE + timedelta(days=1)),
-        itinerary(120.255),
+        itinerary(79.745),
         itinerary(125),
     ])
     with sessions() as db:
         assert locks.settle_lock(db, lock_id, now=FLIGHT_DAY - timedelta(days=1)) is None
         lock = locks.settle_lock(db, lock_id, now=FLIGHT_DAY)
         assert lock.status == "exercised"
-        assert lock.settle_fare == 120.255
+        assert lock.settle_fare == 79.745
         assert lock.payout == 20.26
         assert locks.settle_lock(db, lock_id, now=FLIGHT_DAY) is None
         assert db.get(Lock, lock_id).payout == 20.26
@@ -104,9 +104,9 @@ def test_fallback_uses_later_matching_observation(sessions, monkeypatch):
     monkeypatch.setattr(locks, "search_flights", lambda **_: [])
     with sessions() as db:
         lock = locks.settle_lock(db, lock_id, now=FLIGHT_DAY)
-        assert lock.status == "expired"
+        assert lock.status == "exercised"
         assert lock.settle_fare == 90
-        assert lock.payout == 0
+        assert lock.payout == 10
 
 
 def test_provider_error_pending_then_worker_retries(sessions, monkeypatch):
@@ -126,7 +126,7 @@ def test_provider_error_pending_then_worker_retries(sessions, monkeypatch):
         assert lock.settled_at is None
         assert lock.payout is None
 
-    monkeypatch.setattr(locks, "search_flights", lambda **_: [itinerary(135)])
+    monkeypatch.setattr(locks, "search_flights", lambda **_: [itinerary(65)])
     assert jobs.settle_due_locks(now=FLIGHT_DAY) == {
         "settled": 1, "pending_verification": 0, "failed": 0,
     }
@@ -149,4 +149,14 @@ def test_route_lock_uses_cheapest_valid_one_way_fare(sessions, monkeypatch):
     with sessions() as db:
         lock = locks.settle_lock(db, lock_id, now=FLIGHT_DAY)
         assert lock.settle_fare == 110
-        assert lock.payout == 10
+        assert lock.payout == 0
+
+
+def test_settlement_payout_is_capped_at_half_the_paid_fare(sessions, monkeypatch):
+    with sessions() as db:
+        lock_id = locks.create_lock(db, priced(), bought_at=BOUGHT).id
+    monkeypatch.setattr(locks, "search_flights", lambda **_: [itinerary(1)])
+    with sessions() as db:
+        lock = locks.settle_lock(db, lock_id, now=FLIGHT_DAY)
+        assert lock.status == "exercised"
+        assert lock.payout == 50
