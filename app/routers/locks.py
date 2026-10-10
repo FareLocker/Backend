@@ -13,10 +13,12 @@ from app.models import LedgerEntry, Lock, User
 from app.routers.quotes import _normalize_flight_number, _price_farelock
 from app.schemas import (
     FareLockPriceRequest,
+    LockExerciseRequest,
+    LockExerciseResponse,
     LockPurchaseResponse,
     NaturalFareLockQuoteRequest,
 )
-from app.services.locks import ORIGIN_TIMEZONES
+from app.services.locks import ORIGIN_TIMEZONES, _compute_payout_dollars, _credit_payout
 from app.services.natural_search import SearchParseError, parse_natural_farelock_quote
 from app.services.pricer import PAYOUT_CAP
 
@@ -160,3 +162,88 @@ def purchase_farelock_natural(
         db=db,
     )
     return _to_purchase_response(lock, row)
+
+
+def _early_exercise_lock(
+    *,
+    lock_id: int,
+    user: User,
+    fare_cents: int,
+    db: Session,
+) -> tuple[Lock, User]:
+    lock = db.get(Lock, lock_id)
+    if lock is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Lock not found"
+        )
+
+    if lock.user_id != user.id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Cannot exercise another user's lock",
+        )
+
+    if lock.status != "open":
+        raise _lock_error(
+            "lock_not_open",
+            "Only an open FareLock can be exercised.",
+            status=lock.status,
+        )
+
+    origin = lock.route.split("-")[0]
+    now = datetime.now(UTC)
+    local_today = now.astimezone(ZoneInfo(ORIGIN_TIMEZONES.get(origin, "UTC"))).date()
+    if local_today >= lock.departure_date:
+        raise _lock_error(
+            "past_exercise_window",
+            "Early exercise is only available before the departure date.",
+            departure_date=lock.departure_date.isoformat(),
+        )
+
+    strike_cents = round(lock.K * 100)
+    if fare_cents >= strike_cents:
+        raise _lock_error(
+            "fare_not_below_strike",
+            "Early exercise requires the current fare to be below your strike.",
+            fare_cents=fare_cents,
+            strike_cents=strike_cents,
+        )
+
+    settle_fare = fare_cents / 100.0
+    payout = _compute_payout_dollars(lock.K, settle_fare)
+
+    lock.settle_fare = settle_fare
+    lock.payout = payout
+    lock.settled_at = now
+    lock.status = "exercised"
+    _credit_payout(db, lock, payout)
+
+    row = db.get(User, user.id)
+    if row is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="User not found"
+        )
+
+    db.commit()
+    db.refresh(lock)
+    db.refresh(row)
+    return lock, row
+
+
+@router.post("/{lock_id}/exercise", response_model=LockExerciseResponse)
+def early_exercise_lock(
+    lock_id: int, request: LockExerciseRequest, user: CurrentUser, db: DbSession
+) -> LockExerciseResponse:
+    lock, row = _early_exercise_lock(
+        lock_id=lock_id, user=user, fare_cents=request.fare_cents, db=db
+    )
+
+    return LockExerciseResponse(
+        id=lock.id,
+        status=lock.status,
+        strike_cents=round(lock.K * 100),
+        settle_fare_cents=round((lock.settle_fare or 0) * 100),
+        payout_cents=round((lock.payout or 0) * 100),
+        fee_cents=round(lock.fee * 100),
+        balance_cents=row.balance_cents,
+    )
