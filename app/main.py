@@ -12,6 +12,7 @@ from app.routers.market import router as market_router
 from app.routers.quotes import router as quotes_router
 from app.routers.search import router as search_router
 from app.routers.wallet import router as wallet_router
+from app.routers.locks import router as locks_router
 from app.services.ingest import ingest_fares_csv
 
 
@@ -47,3 +48,4 @@ app.include_router(auth_router)
 app.include_router(quotes_router)
 app.include_router(wallet_router)
 app.include_router(fares_router)
+app.include_router(locks_router)
