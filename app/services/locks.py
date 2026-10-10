@@ -1,9 +1,9 @@
 """Trusted lock creation and automatic flight-day settlement."""
 
+import logging
 from dataclasses import dataclass
 from datetime import date, datetime, timezone
-from decimal import Decimal, ROUND_HALF_UP
-import logging
+from decimal import ROUND_HALF_UP, Decimal
 from math import isfinite
 from zoneinfo import ZoneInfo
 
@@ -13,7 +13,7 @@ from sqlalchemy.orm import Session
 from app.constants import ROUTES
 from app.models import FareObservation, Lock
 from app.services.fastflight import search_flights
-
+from app.services.pricer import PAYOUT_CAP
 
 ORIGIN_TIMEZONES = {
     "ATL": "America/New_York",
@@ -184,8 +184,13 @@ def settle_lock(db: Session, lock_id: int, *, now: datetime | None = None) -> Lo
         lock.status = "pending_verification"
     else:
         lock.settle_fare = fare
-        difference = Decimal(str(fare)) - Decimal(str(lock.K))
-        lock.payout = float(max(difference, Decimal(0)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP))
+        difference = Decimal(str(lock.K)) - Decimal(str(fare))
+        payout_cap = Decimal(str(PAYOUT_CAP)) * Decimal(str(lock.K))
+        lock.payout = float(
+            min(max(difference, Decimal(0)), payout_cap).quantize(
+                Decimal("0.01"), rounding=ROUND_HALF_UP
+            )
+        )
         lock.settled_at = now
         lock.status = "exercised" if lock.payout > 0 else "expired"
     db.commit()
