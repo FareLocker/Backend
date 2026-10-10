@@ -257,3 +257,90 @@ def test_get_transactions_requires_auth(client, db):
     user = _create_user(db)
     response = client.get(f"/users/{user.id}/wallet/transactions")
     assert response.status_code == 401
+
+
+def test_get_transactions_filters_by_entry_type(client, db):
+    user = _create_user(db)
+    db.add_all(
+        [
+            LedgerEntry(
+                user_id=user.id,
+                amount_cents=100,
+                entry_type="recharge",
+                note="top-up",
+                lock_id=None,
+            ),
+            LedgerEntry(
+                user_id=user.id,
+                amount_cents=-40,
+                entry_type="lock_fee",
+                note="fee",
+                lock_id=None,
+            ),
+            LedgerEntry(
+                user_id=user.id,
+                amount_cents=200,
+                entry_type="recharge",
+                note="another",
+                lock_id=None,
+            ),
+        ]
+    )
+    db.commit()
+
+    response = client.get(
+        f"/users/{user.id}/wallet/transactions",
+        headers=_auth_header(user),
+        params={"entry_type": "recharge"},
+    )
+
+    assert response.status_code == 200
+    txs = response.json()["transactions"]
+    assert len(txs) == 2
+    assert {tx["entry_type"] for tx in txs} == {"recharge"}
+    assert {tx["amount_cents"] for tx in txs} == {100, 200}
+
+
+def test_get_transactions_filter_lock_fee_only(client, db):
+    user = _create_user(db)
+    db.add_all(
+        [
+            LedgerEntry(
+                user_id=user.id,
+                amount_cents=100,
+                entry_type="recharge",
+                note=None,
+                lock_id=None,
+            ),
+            LedgerEntry(
+                user_id=user.id,
+                amount_cents=-40,
+                entry_type="lock_fee",
+                note="fee",
+                lock_id=None,
+            ),
+        ]
+    )
+    db.commit()
+
+    response = client.get(
+        f"/users/{user.id}/wallet/transactions",
+        headers=_auth_header(user),
+        params={"entry_type": "lock_fee"},
+    )
+
+    assert response.status_code == 200
+    txs = response.json()["transactions"]
+    assert len(txs) == 1
+    assert txs[0]["entry_type"] == "lock_fee"
+    assert txs[0]["amount_cents"] == -40
+
+
+def test_get_transactions_rejects_invalid_entry_type(client, db):
+    user = _create_user(db)
+    response = client.get(
+        f"/users/{user.id}/wallet/transactions",
+        headers=_auth_header(user),
+        params={"entry_type": "not_a_real_type"},
+    )
+    assert response.status_code == 422
