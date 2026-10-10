@@ -35,6 +35,32 @@ def test_parses_explicit_flight_number_without_confusing_date_context() -> None:
     assert parsed.flight_number == "DL 123"
 
 
+def test_parses_city_names_for_farelock_quote() -> None:
+    parsed = parse_natural_farelock_quote(
+        "I booked a trip from atlanta to miami next Friday for $200, "
+        "how much is FareLock?",
+        reference_date=REFERENCE_DATE,
+    )
+
+    assert parsed.origin == "ATL"
+    assert parsed.destination == "MIA"
+    assert parsed.departure_date == date(2026, 10, 16)
+    assert parsed.fare_paid == 200.0
+
+
+def test_city_quote_with_fare_asks_only_for_missing_date() -> None:
+    with pytest.raises(SearchParseError) as caught:
+        parse_natural_farelock_quote(
+            "I booked a trip from atlanta to miami for $200, how much is FareLock?",
+            reference_date=REFERENCE_DATE,
+        )
+
+    assert caught.value.code == "missing_departure_date"
+    assert caught.value.message == (
+        'What is the departure date? Reply with a date such as "next Friday".'
+    )
+
+
 @pytest.mark.parametrize(
     ("query", "code"),
     [

@@ -20,7 +20,38 @@ class SearchParseError(ValueError):
         return self.message
 
 
+_AIRPORT_ALIASES = {
+    "atl": "ATL",
+    "atlanta": "ATL",
+    "jfk": "JFK",
+    "new york": "JFK",
+    "new york city": "JFK",
+    "lax": "LAX",
+    "los angeles": "LAX",
+    "mia": "MIA",
+    "miami": "MIA",
+    "ord": "ORD",
+    "chicago": "ORD",
+}
+_CITY_NAME = "(?:" + "|".join(
+    re.escape(alias)
+    for alias in sorted(
+        (alias for alias in _AIRPORT_ALIASES if len(alias) > 3),
+        key=len,
+        reverse=True,
+    )
+) + ")"
 _ROUTE_PATTERNS = (
+    re.compile(
+        rf"\bfrom\s+(?P<origin>{_CITY_NAME})\s*(?:to|->|→)\s*"
+        rf"(?P<destination>{_CITY_NAME})\b",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        rf"\b(?P<origin>{_CITY_NAME})\s*(?:to|->|→)\s*"
+        rf"(?P<destination>{_CITY_NAME})\b",
+        re.IGNORECASE,
+    ),
     re.compile(
         r"\bfrom\s+(?P<origin>[A-Za-z]{3})\s*(?:to|->|→)\s*"
         r"(?P<destination>[A-Za-z]{3})\b",
@@ -103,15 +134,20 @@ def _parse_route(query: str) -> tuple[str, str]:
         for match in pattern.finditer(query):
             routes.add(
                 (
-                    match.group("origin").upper(),
-                    match.group("destination").upper(),
+                    _AIRPORT_ALIASES.get(
+                        match.group("origin").lower(), match.group("origin").upper()
+                    ),
+                    _AIRPORT_ALIASES.get(
+                        match.group("destination").lower(),
+                        match.group("destination").upper(),
+                    ),
                 )
             )
 
     if not routes:
         raise SearchParseError(
             "missing_route",
-            'Include a route using airport codes, such as "ATL to LAX".',
+            'Include a route using airport codes or city names, such as "Atlanta to Miami".',
         )
     if len(routes) > 1:
         raise SearchParseError(
@@ -175,7 +211,7 @@ def _parse_departure_date(
     if not candidates and required:
         raise SearchParseError(
             "missing_departure_date",
-            'Include the departure date and fare paid, such as "next Friday, $420".',
+            'What is the departure date? Reply with a date such as "next Friday".',
         )
     if not candidates:
         return reference_date + timedelta(days=1)
