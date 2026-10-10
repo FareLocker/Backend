@@ -8,7 +8,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 from sqlalchemy.pool import StaticPool
 
-from app.models import Base, FareObservation
+from app.models import Base, FareObservation, FareSnapshot
 from app.routers import fares
 from app.routers.fares import _history, _normalize_itinerary, _trend, fare_id
 from app.schemas import FlightSearchRequest, NaturalFlightSearchRequest
@@ -79,6 +79,38 @@ def test_normalized_live_itinerary_uses_a_stable_id_and_empty_history():
     assert fare.fare_cents == 42500
     assert fare.depart.local_time == "2026-11-15T08:30"
     assert fare.trend.points_cents == []
+
+
+def test_search_fares_deduplicates_provider_offers_before_storing_snapshots(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    db = session()
+    departure = date(2026, 11, 15)
+    first_flight = SimpleNamespace(
+        from_airport=SimpleNamespace(code="ATL", name="Atlanta"),
+        to_airport=SimpleNamespace(code="MIA", name="Miami"),
+        departure=SimpleNamespace(date=(2026, 11, 15), time=(8, 30)),
+        arrival=SimpleNamespace(date=(2026, 11, 15), time=(10, 30)),
+        duration=120,
+        flight_number="WN4625",
+    )
+    duplicate_offers = [
+        SimpleNamespace(price=90, airlines=["Southwest"], flights=[first_flight]),
+        SimpleNamespace(price=95, airlines=["Southwest"], flights=[first_flight]),
+    ]
+    monkeypatch.setattr(
+        fares,
+        "parse_natural_search",
+        lambda _query: FlightSearchRequest(
+            origin="ATL", destination="MIA", departure_date=departure
+        ),
+    )
+    monkeypatch.setattr(fares, "search_flights", lambda **_kwargs: duplicate_offers)
+
+    response = asyncio.run(fares.search_fares(NaturalFlightSearchRequest(query="ATL to MIA"), db))
+
+    assert [result.fare_cents for result in response.results] == [9000]
+    assert len(db.query(FareSnapshot).all()) == 1
 
 
 @pytest.mark.parametrize(

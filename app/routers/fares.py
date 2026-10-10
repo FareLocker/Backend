@@ -207,6 +207,18 @@ def _store_snapshot(db: Session, fare: FareSearchResultResponse) -> None:
         snapshot.updated_at = datetime.now(UTC)
 
 
+def _deduplicate_results(results: list[FareSearchResultResponse]) -> list[FareSearchResultResponse]:
+    """Keep one provider offer for every stable fare ID before snapshotting it."""
+    unique: dict[str, FareSearchResultResponse] = {}
+    for result in results:
+        existing = unique.get(result.id)
+        # Providers can return the same first flight in multiple itineraries.
+        # The ID intentionally represents that flight, so retain the cheapest offer.
+        if existing is None or result.fare_cents < existing.fare_cents:
+            unique[result.id] = result
+    return list(unique.values())
+
+
 # Look for search issue here
 @router.post("/search", response_model=FareSearchResponse)
 async def search_fares(
@@ -237,12 +249,11 @@ async def search_fares(
             },
         ) from error
 
-    results = [
-        normalized
-        for itinerary in itineraries
-        if (normalized := _normalize_itinerary(itinerary, parsed.departure_date, db))
-        is not None
+    normalized_results = [
+        normalized for itinerary in itineraries
+        if (normalized := _normalize_itinerary(itinerary, parsed.departure_date, db)) is not None
     ]
+    results = _deduplicate_results(normalized_results)
     for result in results:
         _store_snapshot(db, result)
     db.commit()
