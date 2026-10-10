@@ -33,6 +33,20 @@ services:
       - default
       - dokploy-network
 
+  photon:
+    build:
+      context: ./hacklanta
+    restart: always
+    env_file:
+      - .env
+    environment:
+      # Use Docker's internal DNS instead of the public API URL.
+      FARELOCK_API_URL: http://api:8000
+    depends_on:
+      - api
+    networks:
+      - default
+
 volumes:
   pgdata:
   fares_data:

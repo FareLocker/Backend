@@ -10,7 +10,6 @@ from app.schemas import FareLockQuoteResponse, NaturalFareLockQuoteRequest
 from app.services.natural_search import SearchParseError, parse_natural_farelock_quote
 from app.services.pricer import PAYOUT_CAP, quote_lock
 
-
 router = APIRouter(prefix="/quotes", tags=["quotes"])
 DbSession = Annotated[Session, Depends(get_db)]
 MAX_QUOTE_DAYS = 30

@@ -10,7 +10,6 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from app.config import settings
 
-
 SUPPORTED_ALGORITHMS = ("ES256", "RS256")
 bearer_scheme = HTTPBearer(auto_error=False)
 

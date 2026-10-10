@@ -32,6 +32,7 @@ The service forwards the message to FareLocker’s quote API and replies with
 the fee and maximum price-drop protection. The FareLocker API must be running
 and have pricing data for the requested route.
 
+
 ## Where to go next
 
 - [Spectrum docs](https://photon.codes/docs/spectrum-ts)
