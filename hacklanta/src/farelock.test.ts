@@ -22,8 +22,8 @@ const quote = {
 describe("FareLock messaging", () => {
   test("formats the concise price-drop-protection quote", () => {
     expect(formatFareLockQuote(quote)).toBe(
-      "FareLock for your $284.00 ATL → LAX flight costs $14.60.\n\n" +
-        "If the fare drops before your trip, we’ll cover the difference—up to $142.00.",
+      "FareLock for your $284 ATL → LAX flight costs $14.60.\n\n" +
+        "If the fare drops before your trip, we’ll cover the difference—up to $142.",
     );
   });
 

@@ -20,11 +20,13 @@ const app = await Spectrum({
 // `app.messages` is an async iterable. Each tick yields a `space` (the
 // conversation) and an inbound `message`. Reply by awaiting `space.send(...)`.
 for await (const [space, message] of app.messages) {
-  if (message.direction === "outbound" || message.content.type !== "text") continue;
+  if (message.direction === "outbound") continue;
+  if (message.content.type !== "text") continue;
+  const query = message.content.text;
 
   await space.responding(async () => {
     try {
-      const quote = await fetchFareLockQuote(message.content.text);
+      const quote = await fetchFareLockQuote(query);
       await space.send(formatFareLockQuote(quote));
     } catch (error) {
       await space.send(formatFareLockError(error));

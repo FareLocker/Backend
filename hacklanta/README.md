@@ -12,7 +12,6 @@ From your project Settings on the [Photon dashboard](https://app.photon.codes):
 - `PROJECT_SECRET`
 
 Set `FARELOCK_API_URL` to the FareLocker API base URL. It defaults to
-`http://127.0.0.1:8000` for local development.
 
 ## Run
 

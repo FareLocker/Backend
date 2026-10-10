@@ -89,18 +89,19 @@ export async function fetchFareLockQuote(
   return payload;
 }
 
-function formatDollars(amount: number): string {
+function formatDollars(amount: number, fractionDigits?: number): string {
+  const digits = fractionDigits ?? (Number.isInteger(amount) ? 0 : 2);
   return new Intl.NumberFormat("en-US", {
     style: "currency",
     currency: "USD",
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 2,
+    minimumFractionDigits: digits,
+    maximumFractionDigits: digits,
   }).format(amount);
 }
 
 export function formatFareLockQuote(quote: FareLockQuote): string {
   return [
-    `FareLock for your ${formatDollars(quote.fare_paid)} ${quote.origin} → ${quote.destination} flight costs ${formatDollars(quote.fee)}.`,
+    `FareLock for your ${formatDollars(quote.fare_paid)} ${quote.origin} → ${quote.destination} flight costs ${formatDollars(quote.fee, 2)}.`,
     `If the fare drops before your trip, we’ll cover the difference—up to ${formatDollars(quote.max_potential_payout)}.`,
   ].join("\n\n");
 }
