@@ -313,3 +313,18 @@ class LedgerEntryResponse(BaseModel):
 class WalletTransactionResponse(BaseModel):
     user_id: int
     transactions: list[LedgerEntryResponse]
+
+
+class LockPurchaseResponse(BaseModel):
+    id: int
+    origin: str
+    destination: str
+    departure_date: date
+    flight_number: str | None
+    strike_cents: int
+    fee_cents: int
+    max_payout_cents: int
+    protection_days: int
+    status: str
+    balance_cents: int
+    currency: Literal["USD"] = "USD"
