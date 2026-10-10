@@ -3,7 +3,7 @@
 from datetime import UTC, date, datetime
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.concurrency import run_in_threadpool
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -19,9 +19,11 @@ from app.schemas import (
     FareSearchResponse,
     FareSearchResultResponse,
     FareTrendResponse,
+    GooglePriceHistoryResponse,
+    GooglePriceHistoryPoint,
     NaturalFlightSearchRequest,
 )
-from app.services.fastflight import search_flights
+from app.services.fastflight import fetch_price_history, search_flights
 from app.services.natural_search import SearchParseError, parse_natural_search
 from app.services.pricer import quote_lock
 
@@ -37,7 +39,9 @@ def _flight_number(value: str | None) -> str | None:
     return normalized or None
 
 
-def fare_id(origin: str, destination: str, departure: date, flight_no: str | None) -> str:
+def fare_id(
+    origin: str, destination: str, departure: date, flight_no: str | None
+) -> str:
     """Stable URL-safe key; provider offer IDs are deliberately not exposed."""
     flight = _flight_number(flight_no) or "unknown"
     return f"{origin.lower()}-{destination.lower()}-{departure.isoformat()}-{flight.lower()}"
@@ -54,7 +58,12 @@ def _parse_fare_id(fare_key: str) -> tuple[str, str, date, str | None]:
 
 
 def _history(
-    db: Session, *, origin: str, destination: str, departure: date, flight_no: str | None
+    db: Session,
+    *,
+    origin: str,
+    destination: str,
+    departure: date,
+    flight_no: str | None,
 ) -> list[FareHistoryPoint]:
     """Return one latest USD economy price per observed calendar day."""
     rows = db.scalars(
@@ -108,22 +117,38 @@ def _endpoint(airport: object, local_datetime: object) -> FareEndpointResponse:
 
 
 def _lock_quote(
-    db: Session, *, origin: str, destination: str, departure: date, flight_no: str | None, price: float
+    db: Session,
+    *,
+    origin: str,
+    destination: str,
+    departure: date,
+    flight_no: str | None,
+    price: float,
 ) -> FareLockQuoteSummary | None:
     protection_days = (departure - date.today()).days
-    if (origin, destination) not in ROUTES or not 1 <= protection_days <= MAX_QUOTE_DAYS:
+    if (
+        origin,
+        destination,
+    ) not in ROUTES or not 1 <= protection_days <= MAX_QUOTE_DAYS:
         return None
     try:
         quote = quote_lock(
-            route=(origin, destination), flight_no=flight_no, _departure_date=departure,
-            S0=price, d0=protection_days, dow=departure.weekday(), db=db,
+            route=(origin, destination),
+            flight_no=flight_no,
+            _departure_date=departure,
+            S0=price,
+            d0=protection_days,
+            dow=departure.weekday(),
+            db=db,
         )
     except ValueError:
         return None
     return FareLockQuoteSummary(fee_cents=round(quote.fee * 100))
 
 
-def _normalize_itinerary(itinerary: object, departure: date, db: Session) -> FareSearchResultResponse | None:
+def _normalize_itinerary(
+    itinerary: object, departure: date, db: Session
+) -> FareSearchResultResponse | None:
     price = getattr(itinerary, "price", None)
     flights = list(getattr(itinerary, "flights", []) or [])
     if not isinstance(price, (int, float)) or price <= 0 or not flights:
@@ -134,10 +159,17 @@ def _normalize_itinerary(itinerary: object, departure: date, db: Session) -> Far
     flight_no = _flight_number(getattr(first, "flight_number", None))
     if not origin or not destination or flight_no is None:
         return None
-    history = _history(db, origin=origin, destination=destination, departure=departure, flight_no=flight_no)
+    history = _history(
+        db,
+        origin=origin,
+        destination=destination,
+        departure=departure,
+        flight_no=flight_no,
+    )
     return FareSearchResultResponse(
         id=fare_id(origin, destination, departure, flight_no),
-        airline_name=", ".join(getattr(itinerary, "airlines", []) or []) or "Unknown airline",
+        airline_name=", ".join(getattr(itinerary, "airlines", []) or [])
+        or "Unknown airline",
         flight_number=flight_no,
         cabin_class="Economy",
         stop_airports=[
@@ -145,11 +177,22 @@ def _normalize_itinerary(itinerary: object, departure: date, db: Session) -> Far
             for leg in flights[:-1]
             if getattr(getattr(leg, "to_airport", None), "code", None)
         ],
-        depart=_endpoint(getattr(first, "from_airport", None), getattr(first, "departure", None)),
-        arrive=_endpoint(getattr(last, "to_airport", None), getattr(last, "arrival", None)),
+        depart=_endpoint(
+            getattr(first, "from_airport", None), getattr(first, "departure", None)
+        ),
+        arrive=_endpoint(
+            getattr(last, "to_airport", None), getattr(last, "arrival", None)
+        ),
         duration_minutes=sum(int(getattr(leg, "duration", 0) or 0) for leg in flights),
         fare_cents=round(float(price) * 100),
-        lock=_lock_quote(db, origin=origin, destination=destination, departure=departure, flight_no=flight_no, price=float(price)),
+        lock=_lock_quote(
+            db,
+            origin=origin,
+            destination=destination,
+            departure=departure,
+            flight_no=flight_no,
+            price=float(price),
+        ),
         trend=_trend(history),
     )
 
@@ -176,15 +219,22 @@ def _deduplicate_results(results: list[FareSearchResultResponse]) -> list[FareSe
     return list(unique.values())
 
 
+# Look for search issue here
 @router.post("/search", response_model=FareSearchResponse)
-async def search_fares(request: NaturalFlightSearchRequest, db: DbSession) -> FareSearchResponse:
+async def search_fares(
+    request: NaturalFlightSearchRequest, db: DbSession
+) -> FareSearchResponse:
     """Search live itineraries and enrich each result with local price history."""
     try:
         parsed = parse_natural_search(request.query)
     except SearchParseError as error:
-        raise HTTPException(status_code=422, detail={"code": error.code, "message": error.message}) from error
+        raise HTTPException(
+            status_code=422, detail={"code": error.code, "message": error.message}
+        ) from error
     try:
-        itineraries = await run_in_threadpool(search_flights, **parsed.model_dump(exclude={"context"}))
+        itineraries = await run_in_threadpool(
+            search_flights, **parsed.model_dump(exclude={"context"})
+        )
     except ValueError as error:
         raise HTTPException(
             status_code=422,
@@ -210,6 +260,45 @@ async def search_fares(request: NaturalFlightSearchRequest, db: DbSession) -> Fa
     return FareSearchResponse(results=results)
 
 
+@router.get("/price-history", response_model=GooglePriceHistoryResponse)
+async def price_history(
+    flight_number: str = Query(..., examples=["F9 3288"]),
+    departure_date: date = Query(...),
+    origin: str = Query(..., min_length=3, max_length=3),
+    destination: str = Query(..., min_length=3, max_length=3),
+) -> GooglePriceHistoryResponse:
+    try:
+        insights = await run_in_threadpool(
+            fetch_price_history,
+            flight_number=flight_number,
+            departure_date=departure_date,
+            origin=origin,
+            destination=destination,
+        )
+    except Exception as error:
+        raise HTTPException(
+            status_code=502, detail="Price history unavailable"
+        ) from error
+
+    return GooglePriceHistoryResponse(
+        flight_number=flight_number,
+        departure_date=departure_date,
+        origin=origin.upper(),
+        lowest_price=insights.lowest_price,
+        price_level=insights.price_level or "",
+        typical_price_range=insights.typical_price_range,
+        estimated_savings=insights.estimated_savings,
+        destination_city=insights.destination_city,
+        price_history=[
+            GooglePriceHistoryPoint(
+                date=date.fromisoformat(point.iso_date),
+                amount_cents=int(point.price) * 100,
+            )
+            for point in insights.price_history
+        ],
+    )
+
+
 @router.get("/{fare_key}", response_model=FareDetailResponse)
 def get_fare_detail(fare_key: str, db: DbSession) -> FareDetailResponse:
     """Return stored daily history for a fare list item's deterministic ID."""
@@ -221,5 +310,11 @@ def get_fare_detail(fare_key: str, db: DbSession) -> FareDetailResponse:
         origin, destination, departure, flight_no = _parse_fare_id(fare.id)
     except ValueError as error:
         raise HTTPException(status_code=404, detail="Fare not found") from error
-    history = _history(db, origin=origin, destination=destination, departure=departure, flight_no=flight_no)
+    history = _history(
+        db,
+        origin=origin,
+        destination=destination,
+        departure=departure,
+        flight_no=flight_no,
+    )
     return FareDetailResponse(fare=fare, history=history)

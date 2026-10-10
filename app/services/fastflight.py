@@ -15,6 +15,7 @@ from fast_flights import (
     ResultList,
     create_query,
     get_flights,
+    get_price_history as _get_price_history,
 )
 
 SeatClass = Literal["economy", "premium-economy", "business", "first"]
@@ -52,7 +53,7 @@ def search_flights(
     flight_number: str | None = None,
 ) -> ResultList:
     """Search one-way flights using the direct ``fast_flights`` integration.
-    
+
     Args:
         origin: Three-letter origin airport code.
         destination: Three-letter destination airport code.
@@ -65,7 +66,7 @@ def search_flights(
         currency: Currency code.
         language: Language preference.
         flight_number: Optional specific flight number to filter results.
-    
+
     Returns:
         Flight search results matching the query.
     """
@@ -161,7 +162,10 @@ def search_flights(
                 getattr(leg, "flight_number", ""),
                 *getattr(leg, "codeshares", []),
             ]
-            if any("".join(number.upper().split()) == valid_flight_number for number in numbers):
+            if any(
+                "".join(number.upper().split()) == valid_flight_number
+                for number in numbers
+            ):
                 return True
         return False
 
@@ -171,3 +175,16 @@ def search_flights(
     if hasattr(results, "metadata"):
         filtered.metadata = results.metadata
     return filtered
+
+
+def fetch_price_history(
+    *, flight_number: str, departure_date: date, origin: str, destination: str
+):
+    return _get_price_history(
+        flight_number,
+        departure_date.isoformat(),
+        origin.upper(),
+        destination.upper(),
+        currency="USD",
+        language="en-US",
+    )

@@ -9,7 +9,7 @@ dependencies = [
     "apscheduler>=3.11.3",
     "bcrypt>=5.0.0",
     "email-validator>=2.3.0",
-    "fast-flights @ git+https://github.com/StephenSulimani/flights.git@549bfd2",
+    "fast-flights @ git+https://github.com/StephenSulimani/flights.git@dev",
     "fastapi[standard]>=0.143.0",
     "numpy>=2.5.3",
     "pandas>=3.0.6",

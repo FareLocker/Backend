@@ -258,3 +258,20 @@ class AuthenticatedUserResponse(BaseModel):
     first_name: str
     last_name: str
     balance_cents: int
+
+
+class GooglePriceHistoryPoint(BaseModel):
+    date: date
+    amount_cents: int
+
+
+class GooglePriceHistoryResponse(BaseModel):
+    flight_number: str
+    departure_date: date
+    origin: str
+    lowest_price: int | None
+    price_level: Literal["low", "typical", "high", ""]
+    typical_price_range: tuple[int, int] | None
+    estimated_savings: int | None = None
+    destination_city: str | None = None
+    price_history: list[GooglePriceHistoryPoint]

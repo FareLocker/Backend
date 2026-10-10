@@ -528,7 +528,7 @@ requires-dist = [
     { name = "apscheduler", specifier = ">=3.11.3" },
     { name = "bcrypt", specifier = ">=5.0.0" },
     { name = "email-validator", specifier = ">=2.3.0" },
-    { name = "fast-flights", git = "https://github.com/StephenSulimani/flights.git?rev=549bfd2" },
+    { name = "fast-flights", git = "https://github.com/StephenSulimani/flights.git?rev=dev" },
     { name = "fastapi", extras = ["standard"], specifier = ">=0.143.0" },
     { name = "numpy", specifier = ">=2.5.3" },
     { name = "pandas", specifier = ">=3.0.6" },
@@ -548,7 +548,7 @@ dev = [
 [[package]]
 name = "fast-flights"
 version = "3.1.0"
-source = { git = "https://github.com/StephenSulimani/flights.git?rev=549bfd2#549bfd2b86cd2d292fce41f202ca27b1f180f5cf" }
+source = { git = "https://github.com/StephenSulimani/flights.git?rev=dev#72ae27e88ad03231ab88432c9276d2bb00935b2a" }
 dependencies = [
     { name = "build" },
     { name = "primp" },
