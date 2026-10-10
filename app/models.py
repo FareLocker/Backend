@@ -1,5 +1,15 @@
 from datetime import date, datetime
-from sqlalchemy import JSON, Date, DateTime, Float, Index, Integer, String, Text
+from sqlalchemy import (
+    JSON,
+    Date,
+    DateTime,
+    Float,
+    Index,
+    Integer,
+    String,
+    Text,
+    UniqueConstraint,
+)
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 
@@ -23,7 +33,18 @@ class FareObservation(Base):
     price: Mapped[float] = mapped_column(Float)
     codeshares: Mapped[str | None] = mapped_column(Text)
 
-    __table_args__ = (Index("ix_fare_obs_route", "origin", "dest"),)
+    __table_args__ = (
+        Index("ix_fare_obs_route", "origin", "dest"),
+        UniqueConstraint(
+            "queried_at",
+            "origin",
+            "dest",
+            "departure_date",
+            "flight_no",
+            "price",
+            name="uq_fare_obs_natural",
+        ),
+    )
 
 
 class CurveFit(Base):

@@ -153,12 +153,17 @@ def scrape_query(origin: str, destination: str, departure: date) -> list[dict]:
 
 
 def scrape_grid(
-    out_path: str, d_min: int, d_max: int, sleep_seconds: float = SLEEP_SECONDS
+    out_path: str,
+    d_min: int,
+    d_max: int,
+    sleep_seconds: float = SLEEP_SECONDS,
+    *,
+    write_db: bool = False,
 ) -> tuple[int, int]:
     """Run one full grid pass, appending every observation to out_path.
 
-    Append-only: repeated runs build the time series the vol estimator
-    needs. Returns (rows_appended, failed_cells).
+    Append-only: If write_db=True, also insert into fare_observations
+    (idempotent via uq_fare_obs_natural). Returns (rows_appended, failed_cells).
     """
     os.makedirs(os.path.dirname(os.path.abspath(out_path)), exist_ok=True)
     write_header = not os.path.exists(out_path) or os.path.getsize(out_path) == 0
@@ -170,34 +175,53 @@ def scrape_grid(
         f"({n_cells} queries) -> {out_path}"
     )
 
+    db = None
+    if write_db:
+        from app.db import SessionLocal
+        from app.services.ingest import persist_scrape_rows
+
+        db = SessionLocal()
+
     n_rows, n_fail = 0, 0
-    with open(out_path, "a", newline="", encoding="utf-8") as fh:
-        writer = csv.DictWriter(fh, fieldnames=CSV_COLUMNS)
-        if write_header:
-            writer.writeheader()
-        for origin, destination in ROUTES:
-            for d in range(d_min, d_max + 1):
-                departure = today + timedelta(days=d)
-                for attempt in range(MAX_RETRIES + 1):
-                    try:
-                        rows = scrape_query(origin, destination, departure)
-                        break
-                    except Exception as exc:  # noqa: BLE001 -- keep grid moving
-                        if attempt >= MAX_RETRIES:
+    try:
+        with open(out_path, "a", newline="", encoding="utf-8") as fh:
+            writer = csv.DictWriter(fh, fieldnames=CSV_COLUMNS)
+            if write_header:
+                writer.writeheader()
+            for origin, destination in ROUTES:
+                for d in range(d_min, d_max + 1):
+                    departure = today + timedelta(days=d)
+                    for attempt in range(MAX_RETRIES + 1):
+                        try:
+                            rows = scrape_query(origin, destination, departure)
+                            break
+                        except Exception as exc:  # noqa: BLE001 -- keep grid moving
+                            if attempt >= MAX_RETRIES:
+                                print(
+                                    f"  FAIL {origin}->{destination} d={d}: {exc}",
+                                    file=sys.stderr,
+                                )
+                                n_fail += 1
+                                rows = []
+                            else:
+                                time.sleep(sleep_seconds)
+                    for row in rows:
+                        writer.writerow(row)
+                        n_rows += 1
+                    fh.flush()
+                    if db is not None and rows:
+                        try:
+                            persist_scrape_rows(rows, db)
+                        except Exception as exc:
                             print(
-                                f"  FAIL {origin}->{destination} d={d}: {exc}",
+                                f" DB FAIL {origin}->{destination} d={d}: {exc}",
                                 file=sys.stderr,
                             )
-                            n_fail += 1
-                            rows = []
-                        else:
-                            time.sleep(sleep_seconds)
-                for row in rows:
-                    writer.writerow(row)
-                    n_rows += 1
-                fh.flush()
-                print(f"  {origin}->{destination} d={d}: {len(rows)} flights")
-                time.sleep(sleep_seconds)
+                    print(f"  {origin}->{destination} d={d}: {len(rows)} flights")
+                    time.sleep(sleep_seconds)
+    finally:
+        if db is not None:
+            db.close()
     return n_rows, n_fail
 
 
@@ -207,9 +231,16 @@ def main() -> int:
     ap.add_argument("--d-min", type=int, default=D_MIN)
     ap.add_argument("--d-max", type=int, default=D_MAX)
     ap.add_argument("--sleep", type=float, default=SLEEP_SECONDS)
+    ap.add_argument(
+        "--write-db",
+        action="store_true",
+        help="also insert rows into Postgres (needs DATABASE / POSTGRES_* env)",
+    )
     args = ap.parse_args()
 
-    n_rows, n_fail = scrape_grid(args.out, args.d_min, args.d_max, args.sleep)
+    n_rows, n_fail = scrape_grid(
+        args.out, args.d_min, args.d_max, args.sleep, write_db=args.write_db
+    )
     print(f"Done: {n_rows} rows appended, {n_fail} failed cells.")
     return 0
 

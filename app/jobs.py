@@ -53,6 +53,7 @@ def _make_scrape_job(d_min: int, d_max: int, label: str):
                 d_min,
                 d_max,
                 settings.scraper_sleep_seconds,
+                write_db=True,
             )
             log.info("scrape %s done: %d rows, %d failed cells", label, n_rows, n_fail)
         except Exception:

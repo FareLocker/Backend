@@ -6,11 +6,14 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.jobs import start_jobs, stop_jobs
 from app.routers.search import router as search_router
 from app import db
+from app.services.ingest import ingest_fares_csv
+from app.config import settings
 
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     db.init_db()
+    ingest_fares_csv(settings.fares_csv)
     start_jobs()
     try:
         yield
