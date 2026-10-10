@@ -1,5 +1,6 @@
 from fastapi import APIRouter, HTTPException
 from fastapi.concurrency import run_in_threadpool
+
 #Searches from the FastFlight API aswell as natural language search
 from app.schemas import FlightSearchRequest, NaturalFlightSearchRequest
 from app.services.fastflight import search_flights

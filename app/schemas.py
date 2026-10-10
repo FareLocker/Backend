@@ -26,21 +26,47 @@ class WalletAddFundsResponse(BaseModel):
 
 
 class FareHistoryPoint(BaseModel):
-    queried_at: datetime
-    price: float
+    date: date
+    amount_cents: int
 
 
 class FareDetailResponse(BaseModel):
-    id: str
-    origin: str
-    destination: str
-    departure_date: date
-    flight_number: str | None
-    airline: str | None
-    cabin: str
-    currency: Literal["USD"] = "USD"
-    latest_fare: float
+    fare: "FareSearchResultResponse"
     history: list[FareHistoryPoint]
+
+
+class FareEndpointResponse(BaseModel):
+    airport_code: str
+    airport_name: str
+    city: str
+    local_time: str
+
+
+class FareLockQuoteSummary(BaseModel):
+    fee_cents: int
+
+
+class FareTrendResponse(BaseModel):
+    points_cents: list[int]
+    change_percent: float
+
+
+class FareSearchResultResponse(BaseModel):
+    id: str
+    airline_name: str
+    flight_number: str
+    cabin_class: str
+    stop_airports: list[str]
+    depart: FareEndpointResponse
+    arrive: FareEndpointResponse
+    duration_minutes: int
+    fare_cents: int
+    lock: FareLockQuoteSummary | None
+    trend: FareTrendResponse
+
+
+class FareSearchResponse(BaseModel):
+    results: list[FareSearchResultResponse]
 
 
 class NaturalFlightSearchRequest(BaseModel):
