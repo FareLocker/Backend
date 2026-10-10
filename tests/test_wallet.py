@@ -344,3 +344,101 @@ def test_get_transactions_rejects_invalid_entry_type(client, db):
         params={"entry_type": "not_a_real_type"},
     )
     assert response.status_code == 422
+
+
+def test_withdraw_debits_balance_and_ledger(client, db):
+    user = _create_user(db, balance_cents=1000)
+    response = client.post(
+        f"/users/{user.id}/wallet/withdraw",
+        headers=_auth_header(user),
+        json={"amount_cents": 400, "note": "test withdrawal"},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["user_id"] == user.id
+    assert body["balance_cents"] == 600
+    assert body["debited_cents"] == 400
+    assert body["currency"] == "USD"
+    assert isinstance(body["ledger_entry_id"], int)
+
+    db.refresh(user)
+    assert user.balance_cents == 600
+
+    entry = db.scalar(
+        select(LedgerEntry).where(LedgerEntry.id == body["ledger_entry_id"])
+    )
+    assert entry is not None
+    assert entry.user_id == user.id
+    assert entry.amount_cents == -400
+    assert entry.entry_type == "withdrawal"
+    assert entry.note == "test withdrawal"
+    assert entry.lock_id is None
+
+
+def test_withdraw_allows_full_balance(client, db):
+    user = _create_user(db, balance_cents=250)
+    response = client.post(
+        f"/users/{user.id}/wallet/withdraw",
+        headers=_auth_header(user),
+        json={"amount_cents": 250},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["balance_cents"] == 0
+    assert response.json()["debited_cents"] == 250
+    db.refresh(user)
+    assert user.balance_cents == 0
+
+
+def test_withdraw_rejects_insufficient_funds(client, db):
+    user = _create_user(db, balance_cents=100)
+    response = client.post(
+        f"/users/{user.id}/wallet/withdraw",
+        headers=_auth_header(user),
+        json={"amount_cents": 101},
+    )
+
+    assert response.status_code == 422
+    assert response.json()["detail"] == "Insufficient funds"
+    db.refresh(user)
+    assert user.balance_cents == 100
+    assert db.scalars(select(LedgerEntry)).all() == []
+
+
+def test_withdraw_rejects_other_user(client, db):
+    user = _create_user(db, balance_cents=500)
+    other = _create_user(db, email="other@example.com", balance_cents=500)
+    response = client.post(
+        f"/users/{other.id}/wallet/withdraw",
+        headers=_auth_header(user),
+        json={"amount_cents": 100},
+    )
+
+    assert response.status_code == 403
+    db.refresh(user)
+    db.refresh(other)
+    assert user.balance_cents == 500
+    assert other.balance_cents == 500
+    assert db.scalars(select(LedgerEntry)).all() == []
+
+
+def test_withdraw_requires_auth(client, db):
+    user = _create_user(db, balance_cents=500)
+    response = client.post(
+        f"/users/{user.id}/wallet/withdraw",
+        json={"amount_cents": 100},
+    )
+    assert response.status_code == 401
+
+
+def test_withdraw_rejects_non_positive_amount(client, db):
+    user = _create_user(db, balance_cents=500)
+    response = client.post(
+        f"/users/{user.id}/wallet/withdraw",
+        headers=_auth_header(user),
+        json={"amount_cents": 0},
+    )
+    assert response.status_code == 422
+    db.refresh(user)
+    assert user.balance_cents == 500
