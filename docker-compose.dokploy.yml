@@ -1,0 +1,42 @@
+services:
+  db:
+    image: pgvector/pgvector:pg18-trixie
+    restart: always
+    environment:
+      PGDATA: /var/lib/postgresql/data/pgdata
+    env_file:
+      - .env
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks:
+      - default
+
+  api:
+    build: .
+    restart: always
+    env_file:
+      - .env
+    environment:
+      POSTGRES_HOST: db
+      SCRAPER_ENABLED: ${SCRAPER_ENABLED:-false}
+    volumes:
+      - fares_data:/app/data
+    depends_on:
+      db:
+        condition: service_healthy
+    networks:
+      - default
+      - dokploy-network
+
+volumes:
+  pgdata:
+  fares_data:
+
+networks:
+  dokploy-network:
+    external: true
