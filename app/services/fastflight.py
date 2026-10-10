@@ -15,6 +15,8 @@ from fast_flights import (
     ResultList,
     create_query,
     get_flights,
+)
+from fast_flights import (
     get_price_history as _get_price_history,
 )
 

@@ -19,8 +19,8 @@ from app.schemas import (
     FareSearchResponse,
     FareSearchResultResponse,
     FareTrendResponse,
-    GooglePriceHistoryResponse,
     GooglePriceHistoryPoint,
+    GooglePriceHistoryResponse,
     NaturalFlightSearchRequest,
 )
 from app.services.fastflight import fetch_price_history, search_flights
