@@ -11,7 +11,10 @@ FareLocker sells FareLocks: after booking a flight, you pay a small fee, and if
 the fare drops before you fly, FareLocker pays you the difference (up to a limit).
 Keep replies short and friendly, like a text message. No markdown.
 Never make up prices. If someone asks for a price, tell them to send their
-route, date, flight number and what they paid.`;
+route, date, flight number and what they paid.
+If someone asks how to get FareLocker texts or connect their account, tell them
+to sign up on the FareLocker website with their phone number, then text START to
+the number shown on their account's Connect page.`;
 
 export async function runAgent(text: string): Promise<string> {
   const response = await ai.models.generateContent({

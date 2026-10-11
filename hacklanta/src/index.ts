@@ -7,7 +7,7 @@ import {
   formatFareLockQuote,
   purchaseFareLockFromPhoton,
 } from "./farelock";
-import { runAgent } from "./agent";
+import { runAgent } from "./agent-api";
 
 // Spectrum bridges a single agent loop to many messaging interfaces.
 // Each provider in `providers` adds an interface (terminal TUI, iMessage, …).
@@ -136,6 +136,87 @@ const enrollProjectUser = async (input: {
   return { photonUserId, assignedPhoneNumber };
 };
 
+/**
+ * Look up an already-enrolled user's assigned line by their Photon id
+ * (GET /projects/{projectId}/users/{userId}/). Used by retries, where creating
+ * the user again would be rejected as a duplicate.
+ */
+const lookupProjectUser = async (
+  photonUserId: string,
+): Promise<{ photonUserId: string; assignedPhoneNumber: string }> => {
+  const projectId = process.env.PROJECT_ID;
+  const projectSecret = process.env.PROJECT_SECRET;
+  if (!projectId || !projectSecret) {
+    throw new Error("PROJECT_ID and PROJECT_SECRET are required to look up users");
+  }
+
+  const projectUser = await fetch(
+    `https://spectrum.photon.codes/projects/${encodeURIComponent(projectId)}/users/${encodeURIComponent(photonUserId)}/`,
+    {
+      headers: { Authorization: `Basic ${btoa(`${projectId}:${projectSecret}`)}` },
+    },
+  );
+
+  const responseText = await projectUser.text();
+  let payload: unknown = null;
+  try {
+    payload = JSON.parse(responseText);
+  } catch {
+    // The diagnostic below includes the non-JSON response body.
+  }
+  const data = payload !== null && typeof payload === "object" && "data" in payload
+    ? (payload as { data: unknown }).data
+    : payload;
+  const record = data !== null && typeof data === "object"
+    ? data as Record<string, unknown>
+    : null;
+  const assignedPhoneNumber = record?.assignedPhoneNumber;
+  if (!projectUser.ok || typeof assignedPhoneNumber !== "string") {
+    const detail = responseText.slice(0, 300);
+    throw new Error(
+      `Could not look up Photon project user (HTTP ${projectUser.status}): ${detail}`,
+    );
+  }
+  return { photonUserId, assignedPhoneNumber };
+};
+
+const lookupUser = async (request: Request): Promise<Response> => {
+  if (!messagingSecret) {
+    return Response.json(
+      { error: "Photon messaging endpoint is not configured" },
+      { status: 503 },
+    );
+  }
+  if (request.headers.get("x-photon-internal-secret") !== messagingSecret) {
+    return Response.json({ error: "Unauthorized" }, { status: 401 });
+  }
+
+  let photonUserId = "";
+  try {
+    const parsed: unknown = await request.json();
+    if (parsed !== null && typeof parsed === "object") {
+      const value = (parsed as { photon_user_id?: unknown }).photon_user_id;
+      if (typeof value === "string") photonUserId = value.trim();
+    }
+  } catch {
+    return Response.json({ error: "Invalid JSON" }, { status: 400 });
+  }
+  if (!photonUserId) {
+    return Response.json({ error: "photon_user_id is required" }, { status: 422 });
+  }
+
+  try {
+    const user = await lookupProjectUser(photonUserId);
+    return Response.json({
+      photon_user_id: user.photonUserId,
+      assigned_phone_number: user.assignedPhoneNumber,
+    });
+  } catch (error) {
+    console.error("Could not look up messaging user:", error);
+    return Response.json({ error: "Messaging lookup failed" }, { status: 502 });
+  }
+};
+
 const provisionUser = async (request: Request): Promise<Response> => {
   if (!messagingSecret) {
     return Response.json(
@@ -206,6 +287,9 @@ Bun.serve({
     const url = new URL(request.url);
     if (request.method === "POST" && url.pathname === "/provision-user") {
       return provisionUser(request);
+    }
+    if (request.method === "POST" && url.pathname === "/lookup-user") {
+      return lookupUser(request);
     }
     return new Response("Not found", { status: 404 });
   },
@@ -311,26 +395,13 @@ for await (const [space, message] of app.messages) {
       return;
     }
 
-
-try {
-  // One conversation per sender, so the agent remembers context.
-  const conversationId = inboundPhone ?? String((space as { id?: unknown }).id ?? "unknown");
-  const reply = await runAgent(conversationId, query, {
-    // The agent prepared a purchase: the user confirms by replying LOCK.
-    onFareLockPrepared: (preparedQuery) => {
-      if (!inboundPhone) return;
-      pendingQuotes.set(inboundPhone, {
-        query: preparedQuery,
-        expiresAt: Date.now() + quoteTtlMs,
-      });
-      console.info("farelock.quote.stored", {
-        phone: redactPhone(inboundPhone),
-        expiresInSeconds: quoteTtlMs / 1000,
-      });
-    },
+    // Everything else goes to the AI assistant.
+    try {
+      const reply = await runAgent(query);
+      await space.send(reply);
+    } catch (error) {
+      console.error("farelock.agent.failed", error);
+      await space.send("Sorry, I hit a snag on my end. Try again in a moment.");
+    }
   });
-  await space.send(reply);
-} catch (error) {
-  console.error("farelock.agent.failed", error);
-  await space.send("Sorry, I hit a snag on my end. Try again in a moment.");
 }
