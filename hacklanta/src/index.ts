@@ -328,8 +328,14 @@ const markWelcomeDelivered = (phoneNumber: string) =>
     { method: "POST" },
   );
 
+// Keep each conversation in order, without making one traveler's slow model
+// turn delay every other inbound conversation.
+const conversationJobs = new Map<string, Promise<void>>();
+
 // `app.messages` is an async iterable. Each tick yields a `space` (the
-// conversation) and an inbound `message`. Reply by awaiting `space.send(...)`.
+// conversation) and an inbound `message`. Queue work per conversation rather
+// than awaiting it in this loop, so Gemini turns for different users run in
+// parallel while messages from one user remain ordered.
 for await (const [space, message] of app.messages) {
   if (message.direction === "outbound") continue;
 
@@ -337,84 +343,99 @@ for await (const [space, message] of app.messages) {
 
   if (message.content.type !== "text") continue;
   const query = message.content.text.trim();
+  const conversationId = inboundPhone ?? String((space as { id?: unknown }).id ?? "unknown");
+  const previous = conversationJobs.get(conversationId) ?? Promise.resolve();
+  const job = previous.catch(() => undefined).then(async () => {
 
-  if (query.toUpperCase() === "START") {
-    if (!inboundPhone) continue;
-    try {
-      const firstName = await welcomeForStart(inboundPhone);
-      if (!firstName) continue;
-      await space.responding(async () => {
-        await space.send(welcomeText(firstName));
-      });
-      await markWelcomeDelivered(inboundPhone);
-    } catch (error) {
-      console.error("Could not complete START onboarding:", error);
-    }
-    continue;
-  }
-
-  await space.responding(async () => {
-    if (query.toUpperCase() === "LOCK") {
-      const pending = inboundPhone ? pendingQuotes.get(inboundPhone) : undefined;
-      console.info("farelock.lock.received", {
-        phone: redactPhone(inboundPhone),
-        hasPendingQuote: Boolean(pending),
-      });
-      if (!inboundPhone || !pending || pending.expiresAt <= Date.now()) {
-        if (inboundPhone) pendingQuotes.delete(inboundPhone);
-        console.info("farelock.lock.rejected", {
-          phone: redactPhone(inboundPhone),
-          reason: !pending ? "missing_quote" : "expired_quote",
-        });
-        await space.send(
-          "I don’t have an active FareLock quote. Send your flight details and fare to get one.",
-        );
-        return;
-      }
-
+    if (query.toUpperCase() === "START") {
+      if (!inboundPhone) return;
       try {
-        const purchase = await purchaseFareLockForPhone(inboundPhone, pending.request);
-        pendingQuotes.delete(inboundPhone);
-        console.info("farelock.lock.purchased", {
-          phone: redactPhone(inboundPhone),
-          lockId: purchase.id,
-          feeCents: purchase.fee_cents,
-          balanceCents: purchase.balance_cents,
+        const firstName = await welcomeForStart(inboundPhone);
+        if (!firstName) return;
+        await space.responding(async () => {
+          await space.send(welcomeText(firstName));
         });
-        await space.send(formatFareLockPurchase(purchase));
+        await markWelcomeDelivered(inboundPhone);
       } catch (error) {
-        console.warn("farelock.lock.failed", {
-          phone: redactPhone(inboundPhone),
-          code: error instanceof Error && "code" in error
-            ? (error as { code?: unknown }).code
-            : undefined,
-          message: error instanceof Error ? error.message : "Unknown error",
-        });
-        await space.send(formatFareLockError(error));
+        console.error("Could not complete START onboarding:", error);
       }
       return;
     }
 
-    // Everything else goes to the AI assistant.
-    try {
-      const reply = await runAgent({
-        chatId: inboundPhone ?? String((space as { id?: unknown }).id ?? "unknown"),
-        phone: inboundPhone,
-        text: query,
-        // The assistant prepared a lock: the texter confirms by replying LOCK.
-        onFareLockPrepared: (request) => {
-          if (!inboundPhone) return;
-          pendingQuotes.set(inboundPhone, { request, expiresAt: Date.now() + quoteTtlMs });
-          console.info("farelock.quote.stored", {
+    await space.responding(async () => {
+      if (query.toUpperCase() === "LOCK") {
+        const pending = inboundPhone ? pendingQuotes.get(inboundPhone) : undefined;
+        console.info("farelock.lock.received", {
+          phone: redactPhone(inboundPhone),
+          hasPendingQuote: Boolean(pending),
+        });
+        if (!inboundPhone || !pending || pending.expiresAt <= Date.now()) {
+          if (inboundPhone) pendingQuotes.delete(inboundPhone);
+          console.info("farelock.lock.rejected", {
             phone: redactPhone(inboundPhone),
-            expiresInSeconds: quoteTtlMs / 1000,
+            reason: !pending ? "missing_quote" : "expired_quote",
           });
-        },
-      });
-      await space.send(reply);
-    } catch (error) {
-      console.error("farelock.agent.failed", error);
-      await space.send("Sorry, I hit a snag on my end. Try again in a moment.");
-    }
+          await space.send(
+            "I don’t have an active FareLock quote. Send your flight details and fare to get one.",
+          );
+          return;
+        }
+
+        try {
+          const purchase = await purchaseFareLockForPhone(inboundPhone, pending.request);
+          pendingQuotes.delete(inboundPhone);
+          console.info("farelock.lock.purchased", {
+            phone: redactPhone(inboundPhone),
+            lockId: purchase.id,
+            feeCents: purchase.fee_cents,
+            balanceCents: purchase.balance_cents,
+          });
+          await space.send(formatFareLockPurchase(purchase));
+        } catch (error) {
+          console.warn("farelock.lock.failed", {
+            phone: redactPhone(inboundPhone),
+            code: error instanceof Error && "code" in error
+              ? (error as { code?: unknown }).code
+              : undefined,
+            message: error instanceof Error ? error.message : "Unknown error",
+          });
+          await space.send(formatFareLockError(error));
+        }
+        return;
+      }
+
+      // Everything else goes to the AI assistant.
+      try {
+        const reply = await runAgent({
+          chatId: conversationId,
+          phone: inboundPhone,
+          text: query,
+          // The assistant prepared a lock: the texter confirms by replying LOCK.
+          onFareLockPrepared: (request) => {
+            if (!inboundPhone) return;
+            pendingQuotes.set(inboundPhone, { request, expiresAt: Date.now() + quoteTtlMs });
+            console.info("farelock.quote.stored", {
+              phone: redactPhone(inboundPhone),
+              expiresInSeconds: quoteTtlMs / 1000,
+            });
+          },
+        });
+        await space.send(reply);
+      } catch (error) {
+        console.error("farelock.agent.failed", error);
+        await space.send("Sorry, I hit a snag on my end. Try again in a moment.");
+      }
+    });
   });
+
+  conversationJobs.set(conversationId, job);
+  void job.then(
+    () => {
+      if (conversationJobs.get(conversationId) === job) conversationJobs.delete(conversationId);
+    },
+    (error) => {
+      console.error("farelock.message.failed", error);
+      if (conversationJobs.get(conversationId) === job) conversationJobs.delete(conversationId);
+    },
+  );
 }
