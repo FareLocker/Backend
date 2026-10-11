@@ -155,12 +155,21 @@ def test_fare_detail_refreshes_live_sim_fare_cents(monkeypatch: pytest.MonkeyPat
     db.add(FareSnapshot(id=fare.id, payload=fare.model_dump()))
     db.commit()
     monkeypatch.setattr(fares.sim_flights, "price_at", lambda _fn, **_kw: 211.0)
+    monkeypatch.setattr(
+        fares,
+        "quote_lock",
+        lambda **_kwargs: __import__("types").SimpleNamespace(
+            fee=18.5, K=211.0, T_days=10
+        ),
+    )
 
     response = fares.get_fare_detail(fare.id, db)
 
     assert response.history_source == "sim"
     assert response.fare.fare_cents == 21100
     assert response.fare.source == "sim"
+    assert response.fare.lock is not None
+    assert response.fare.lock.fee_cents == 1850
 
 
 def test_fare_detail_falls_back_to_local_history_when_google_is_unavailable(

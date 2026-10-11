@@ -19,6 +19,9 @@ STEP_SECONDS = 180.0
 PRICE_FLOOR = 40.0
 HISTORY_STEPS = 30
 MAX_QUOTE_DAYS = 30
+# Calendar-day history is evaluated at this UTC hour so past bars stay fixed
+# across polls (only "today" tracks the live wall-clock price).
+HISTORY_ANCHOR_HOUR_UTC = 12
 # Kept as an alias so older tests/docs referring to period still resolve.
 PERIOD_SECONDS = STEP_SECONDS
 
@@ -42,49 +45,46 @@ class SimFlightSpec:
         return f"{self.carrier}{self.number}"
 
 
+# Two flights per ROUTES pair. XD101 / XD202 / XD303 keep legacy pitch identities.
 CATALOG: tuple[SimFlightSpec, ...] = (
-    SimFlightSpec(
-        carrier="XD",
-        number="101",
-        origin="ATL",
-        destination="LAX",
-        base_price=220.0,
-        amplitude=0.18,
-        seed=11,
-        duration_minutes=275,
-        depart_hour=9,
-        depart_minute=15,
-    ),
-    SimFlightSpec(
-        carrier="XD",
-        number="202",
-        origin="ATL",
-        destination="JFK",
-        base_price=180.0,
-        amplitude=0.22,
-        seed=29,
-        duration_minutes=140,
-        depart_hour=11,
-        depart_minute=40,
-    ),
-    SimFlightSpec(
-        carrier="XD",
-        number="303",
-        origin="ATL",
-        destination="LAX",
-        base_price=260.0,
-        amplitude=0.12,
-        seed=47,
-        duration_minutes=290,
-        depart_hour=16,
-        depart_minute=5,
-    ),
+    # ATL-JFK
+    SimFlightSpec("XD", "202", "ATL", "JFK", 180.0, 0.22, 29, 140, 11, 40),
+    SimFlightSpec("XD", "204", "ATL", "JFK", 195.0, 0.16, 31, 145, 17, 20),
+    # JFK-ATL
+    SimFlightSpec("XD", "211", "JFK", "ATL", 185.0, 0.20, 41, 145, 9, 5),
+    SimFlightSpec("XD", "213", "JFK", "ATL", 200.0, 0.15, 43, 150, 16, 45),
+    # ATL-LAX
+    SimFlightSpec("XD", "101", "ATL", "LAX", 220.0, 0.18, 11, 275, 9, 15),
+    SimFlightSpec("XD", "303", "ATL", "LAX", 260.0, 0.12, 47, 290, 16, 5),
+    # LAX-ATL
+    SimFlightSpec("XD", "111", "LAX", "ATL", 230.0, 0.17, 51, 270, 8, 40),
+    SimFlightSpec("XD", "113", "LAX", "ATL", 250.0, 0.14, 53, 280, 15, 55),
+    # ATL-MIA
+    SimFlightSpec("XD", "301", "ATL", "MIA", 160.0, 0.19, 61, 120, 10, 10),
+    SimFlightSpec("XD", "305", "ATL", "MIA", 175.0, 0.15, 63, 125, 18, 0),
+    # MIA-ATL
+    SimFlightSpec("XD", "311", "MIA", "ATL", 165.0, 0.18, 67, 125, 9, 25),
+    SimFlightSpec("XD", "315", "MIA", "ATL", 180.0, 0.14, 69, 130, 17, 35),
+    # JFK-LAX
+    SimFlightSpec("XD", "401", "JFK", "LAX", 280.0, 0.16, 71, 360, 8, 15),
+    SimFlightSpec("XD", "403", "JFK", "LAX", 310.0, 0.13, 73, 355, 16, 50),
+    # LAX-JFK
+    SimFlightSpec("XD", "411", "LAX", "JFK", 290.0, 0.16, 77, 330, 7, 55),
+    SimFlightSpec("XD", "413", "LAX", "JFK", 320.0, 0.12, 79, 335, 15, 20),
+    # ATL-ORD
+    SimFlightSpec("XD", "501", "ATL", "ORD", 150.0, 0.20, 81, 130, 10, 45),
+    SimFlightSpec("XD", "503", "ATL", "ORD", 165.0, 0.15, 83, 135, 18, 15),
+    # ORD-ATL
+    SimFlightSpec("XD", "511", "ORD", "ATL", 155.0, 0.19, 87, 125, 9, 35),
+    SimFlightSpec("XD", "513", "ORD", "ATL", 170.0, 0.14, 89, 130, 17, 5),
 )
 
 _AIRPORT_NAMES = {
     "ATL": "Hartsfield-Jackson Atlanta International",
     "LAX": "Los Angeles International",
     "JFK": "John F. Kennedy International",
+    "MIA": "Miami International",
+    "ORD": "Chicago O'Hare International",
 }
 
 
@@ -174,23 +174,39 @@ def price_at(
     return round(max(price, PRICE_FLOOR), 2)
 
 
+def _day_anchor(day: date) -> datetime:
+    """Fixed UTC instant used for a completed calendar day's history bar."""
+    return datetime(
+        day.year,
+        day.month,
+        day.day,
+        HISTORY_ANCHOR_HOUR_UTC,
+        0,
+        0,
+        tzinfo=UTC,
+    )
+
+
 def _history_points(
     spec: SimFlightSpec, *, at: datetime | None = None
 ) -> list[SimpleNamespace]:
-    """Synthetic history using the same noise path, stepped back in time."""
+    """Calendar-day history ending today.
+
+    Past days are anchored at ``HISTORY_ANCHOR_HOUR_UTC`` so repeated polls
+    during the same UTC day return identical bars. Today's point uses the
+    live wall-clock instant so it can track the moving sim fare.
+    """
     when = at or datetime.now(UTC)
     if when.tzinfo is None:
         when = when.replace(tzinfo=UTC)
     else:
         when = when.astimezone(UTC)
+    today = when.date()
     points: list[SimpleNamespace] = []
-    # Space samples by a fraction of STEP_SECONDS so the chart shows wander.
-    sample_gap = STEP_SECONDS / 2.0
     for step in range(HISTORY_STEPS - 1, -1, -1):
-        instant = when - timedelta(seconds=sample_gap * step)
+        day = today - timedelta(days=step)
+        instant = when if day == today else _day_anchor(day)
         price = price_at(spec.flight_no, at=instant)
-        # Label steps as calendar days ending today for chart UIs.
-        day = when.date() - timedelta(days=step)
         points.append(
             SimpleNamespace(
                 price=int(round(price)),
@@ -244,6 +260,8 @@ def history_insights(
         "LAX": "Los Angeles",
         "JFK": "New York",
         "ATL": "Atlanta",
+        "MIA": "Miami",
+        "ORD": "Chicago",
     }.get(destination.upper(), destination.upper())
     return SimPriceInsights(
         lowest_price=low,

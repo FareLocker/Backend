@@ -7,6 +7,7 @@ from unittest.mock import Mock
 
 import pytest
 
+from app.constants import ROUTES
 from app.models import Lock
 from app.services import fastflight, sim_flights
 from app.services.locks import _provider_fare, _resolve_current_fare
@@ -54,6 +55,48 @@ def test_history_insights_non_empty() -> None:
     assert insights.price_level in {"low", "typical", "high"}
 
 
+def test_history_is_calendar_days_ending_today() -> None:
+    at = datetime(2026, 10, 10, 15, 30, 0, tzinfo=UTC)
+    insights = sim_flights.history_insights(
+        "XD101",
+        origin="ATL",
+        destination="LAX",
+        departure_date=date(2026, 10, 20),
+        at=at,
+    )
+    dates = [point.iso_date for point in insights.price_history]
+    assert dates[0] == "2026-09-11"
+    assert dates[-1] == "2026-10-10"
+    assert len(dates) == len(set(dates))
+
+
+def test_history_past_days_stable_across_polls() -> None:
+    """Polling minutes apart must not reshuffle completed history bars."""
+    t0 = datetime(2026, 10, 10, 12, 0, 0, tzinfo=UTC)
+    t1 = t0 + timedelta(minutes=45)
+    a = sim_flights.history_insights(
+        "XD101",
+        origin="ATL",
+        destination="LAX",
+        departure_date=date(2026, 10, 20),
+        at=t0,
+    )
+    b = sim_flights.history_insights(
+        "XD101",
+        origin="ATL",
+        destination="LAX",
+        departure_date=date(2026, 10, 20),
+        at=t1,
+    )
+    past_a = [(p.iso_date, p.price) for p in a.price_history[:-1]]
+    past_b = [(p.iso_date, p.price) for p in b.price_history[:-1]]
+    assert past_a == past_b
+    assert a.price_history[-1].iso_date == b.price_history[-1].iso_date == "2026-10-10"
+    # Today's bar may move with the live noise path (stored as whole dollars).
+    assert a.price_history[-1].price == int(round(sim_flights.price_at("XD101", at=t0)))
+    assert b.price_history[-1].price == int(round(sim_flights.price_at("XD101", at=t1)))
+
+
 def test_iter_itineraries_matches_route_and_window() -> None:
     today = date(2026, 10, 10)
     departure = today + timedelta(days=7)
@@ -71,6 +114,21 @@ def test_iter_itineraries_matches_route_and_window() -> None:
     assert "XD101" in numbers
     assert "XD303" in numbers
     assert all(row.is_sim for row in rows)
+
+
+def test_catalog_covers_every_supported_route() -> None:
+    covered = {(spec.origin, spec.destination) for spec in sim_flights.CATALOG}
+    assert covered == set(ROUTES)
+    # At least one flight per route; ATL-LAX keeps the two legacy demos.
+    for origin, destination in ROUTES:
+        rows = sim_flights.iter_itineraries(
+            origin=origin,
+            destination=destination,
+            departure_date=date(2026, 10, 17),
+            today=date(2026, 10, 10),
+        )
+        assert len(rows) >= 1, f"missing sim inventory for {origin}-{destination}"
+    assert len(sim_flights.CATALOG) == len(ROUTES) * 2
 
 
 def test_iter_itineraries_empty_outside_quote_window() -> None:
@@ -137,6 +195,25 @@ def test_fetch_price_history_sim_never_calls_google(
     google.assert_not_called()
     assert insights.price_history
     assert insights.lowest_price is not None
+
+
+def test_lock_quote_available_for_sim_without_curve(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.routers import fares as fares_router
+    from app.services import pricer as pricer_mod
+
+    monkeypatch.setattr(pricer_mod, "load_latest_curve", lambda *_a, **_k: None)
+    summary = fares_router._lock_quote(
+        db=Mock(),
+        origin="ATL",
+        destination="LAX",
+        departure=date.today() + timedelta(days=10),
+        flight_no="XD101",
+        price=220.0,
+    )
+    assert summary is not None
+    assert summary.fee_cents >= 100
 
 
 def test_provider_fare_uses_sim_price() -> None:

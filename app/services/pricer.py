@@ -6,10 +6,11 @@ from sqlalchemy.orm import Session
 import numpy as np
 
 from app.services.curves import make_f_flight
+from app.services import sim_flights
 from app.services.vol import get_sigma, load_latest_curve
 from app.config import settings
 
-PAYOUT_CAP = 0.5 # max payout = PAYOUT_CAP * K
+PAYOUT_CAP = 0.5  # max payout = PAYOUT_CAP * K
 
 def american_put_crr(
         X0: float, K: float,
@@ -132,24 +133,30 @@ def quote_lock(
         raise ValueError("d0 must be >= 0")
 
     curve = load_latest_curve(route, db)
+    T_days = d0
     if curve is None:
-        raise ValueError(f"no curve fit for {route[0]}-{route[1]}")
+        # Demo XD* flights have no historical curve; price on a flat spot
+        # schedule with the vol prior so FareLock quotes still work in pitch.
+        if not sim_flights.is_sim(flight_no):
+            raise ValueError(f"no curve fit for {route[0]}-{route[1]}")
+        f_schedule = [S0] * (T_days + 1)
+        f0 = S0
+        sigma = float(settings.vol_prior)
+    else:
+        f_flight = make_f_flight(curve.params, curve.flight_premia or {})
 
-    f_flight = make_f_flight(curve.params, curve.flight_premia or {})
-
-    # Freeze dow/hol at purchase; only d declines along the path.
-    f_schedule = [
-        f_flight(max(d0 - i, 1), dow, hol, flight_no) for i in range(d0 + 1)
-    ]
-    f0 = f_schedule[0]
-    if f0 <= 0:
-        raise ValueError("f_flight returned non-positive level")
+        # Freeze dow/hol at purchase; only d declines along the path.
+        f_schedule = [
+            f_flight(max(d0 - i, 1), dow, hol, flight_no) for i in range(d0 + 1)
+        ]
+        f0 = f_schedule[0]
+        if f0 <= 0:
+            raise ValueError("f_flight returned non-positive level")
+        # Average bucket sigma along the remaining d path (still one CRR sigma).
+        sigmas = [get_sigma(route, max(d0 - i, 1), db) for i in range(T_days + 1)]
+        sigma = float(sum(sigmas) / len(sigmas))
 
     X0 = S0 / f0
-    T_days = d0
-    # Average bucket sigma along the remaining d path (still one CRR sigma).
-    sigmas = [get_sigma(route, max(d0 - i, 1), db) for i in range(T_days + 1)]
-    sigma = float(sum(sigmas) / len(sigmas))
     lam = float(settings.base_lambda)
 
     V = american_put_crr(

@@ -417,11 +417,13 @@ def get_fare_detail(fare_key: str, db: DbSession) -> FareDetailResponse:
             sim_history = []
 
         # Snapshot fare_cents is frozen at search time; refresh so FE polls see movement.
+        history = sim_history or local_history
         try:
             live_price = sim_flights.price_at(flight_no)
+            live_cents = round(live_price * 100)
             fare = fare.model_copy(
                 update={
-                    "fare_cents": round(live_price * 100),
+                    "fare_cents": live_cents,
                     "lock": _lock_quote(
                         db,
                         origin=origin,
@@ -430,16 +432,23 @@ def get_fare_detail(fare_key: str, db: DbSession) -> FareDetailResponse:
                         flight_no=flight_no,
                         price=live_price,
                     ),
-                    "trend": _trend(sim_history) if sim_history else fare.trend,
+                    "trend": _trend(history) if history else fare.trend,
                     "source": "sim",
                 }
             )
+            # Keep the chart tip on the live fare so polls move the series.
+            if history:
+                tip = history[-1]
+                history = [
+                    *history[:-1],
+                    FareHistoryPoint(date=tip.date, amount_cents=live_cents),
+                ]
         except Exception:
             pass
 
         return FareDetailResponse(
             fare=fare,
-            history=sim_history or local_history,
+            history=history,
             history_source="sim" if sim_history else "local",
         )
 
