@@ -24,6 +24,8 @@ services:
     environment:
       POSTGRES_HOST: db
       SCRAPER_ENABLED: ${SCRAPER_ENABLED:-false}
+      # The API reaches the Photon worker over Docker's internal network.
+      PHOTON_MESSAGING_URL: http://photon-worker:8787
     volumes:
       - fares_data:/app/data
     depends_on:
