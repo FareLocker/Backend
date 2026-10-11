@@ -7,6 +7,7 @@ import {
   formatFareLockQuote,
   purchaseFareLockFromPhoton,
 } from "./farelock";
+import { runAgent } from "./agent";
 
 // Spectrum bridges a single agent loop to many messaging interfaces.
 // Each provider in `providers` adds an interface (terminal TUI, iMessage, …).
@@ -310,29 +311,26 @@ for await (const [space, message] of app.messages) {
       return;
     }
 
-    try {
-      const quote = await fetchFareLockQuote(query);
-      if (!quote.flight_number) {
-        await space.send(
-          "Please include your flight number, like \"DL 123\", to get a FareLock quote.",
-        );
-        return;
-      }
-      if (inboundPhone) {
-        pendingQuotes.set(inboundPhone, {
-          query,
-          expiresAt: Date.now() + quoteTtlMs,
-        });
-        console.info("farelock.quote.stored", {
-          phone: redactPhone(inboundPhone),
-          expiresInSeconds: quoteTtlMs / 1000,
-        });
-      } else {
-        console.warn("farelock.quote.not_stored", { reason: "sender_phone_unavailable" });
-      }
-      await space.send(formatFareLockQuote(quote));
-    } catch (error) {
-      await space.send(formatFareLockError(error));
-    }
+
+try {
+  // One conversation per sender, so the agent remembers context.
+  const conversationId = inboundPhone ?? String((space as { id?: unknown }).id ?? "unknown");
+  const reply = await runAgent(conversationId, query, {
+    // The agent prepared a purchase: the user confirms by replying LOCK.
+    onFareLockPrepared: (preparedQuery) => {
+      if (!inboundPhone) return;
+      pendingQuotes.set(inboundPhone, {
+        query: preparedQuery,
+        expiresAt: Date.now() + quoteTtlMs,
+      });
+      console.info("farelock.quote.stored", {
+        phone: redactPhone(inboundPhone),
+        expiresInSeconds: quoteTtlMs / 1000,
+      });
+    },
   });
+  await space.send(reply);
+} catch (error) {
+  console.error("farelock.agent.failed", error);
+  await space.send("Sorry, I hit a snag on my end. Try again in a moment.");
 }

@@ -404,10 +404,8 @@ def _early_exercise_lock(
             status=lock.status,
         )
 
-    origin = lock.route.split("-")[0]
     now = datetime.now(UTC)
-    local_today = now.astimezone(ZoneInfo(ORIGIN_TIMEZONES.get(origin, "UTC"))).date()
-    if local_today >= lock.departure_date:
+    if not _exercisable_now(lock, now=now):
         raise _lock_error(
             "past_exercise_window",
             "Early exercise is only available before the departure date.",

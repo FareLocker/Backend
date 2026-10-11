@@ -104,6 +104,43 @@ def test_quote_lock_wires_fee_and_loading():
     assert q.V_model > 0.0
 
 
+def test_quote_lock_prices_sim_flight_without_curve():
+    """XD* demo flights must still get a FareLock fee when no curve is fit."""
+    db = MagicMock()
+    with patch("app.services.pricer.load_latest_curve", return_value=None):
+        q = quote_lock(
+            route=("ATL", "LAX"),
+            flight_no="XD101",
+            _departure_date=date(2026, 10, 24),
+            S0=220.0,
+            d0=10,
+            dow=4,
+            db=db,
+        )
+
+    assert q.K == 220.0
+    assert q.X0 == pytest.approx(1.0)
+    assert q.sigma_used == pytest.approx(settings.vol_prior)
+    assert q.fee >= settings.min_fee_dollars
+    loaded = (1.0 + settings.base_lambda) * q.V_model
+    assert q.fee == pytest.approx(max(loaded, settings.min_fee_dollars))
+
+
+def test_quote_lock_still_requires_curve_for_non_sim():
+    db = MagicMock()
+    with patch("app.services.pricer.load_latest_curve", return_value=None):
+        with pytest.raises(ValueError, match="no curve fit"):
+            quote_lock(
+                route=("ATL", "LAX"),
+                flight_no="DL123",
+                _departure_date=date(2026, 10, 24),
+                S0=220.0,
+                d0=10,
+                dow=4,
+                db=db,
+            )
+
+
 def test_quote_lock_applies_minimum_fee_floor():
     curve = SimpleNamespace(params={}, flight_premia={})
 

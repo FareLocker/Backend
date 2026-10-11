@@ -9,6 +9,7 @@
     "test": "bun test"
   },
   "dependencies": {
+    "@google/genai": "^2.28.0",
     "spectrum-ts": "^12.10.1"
   },
   "devDependencies": {
