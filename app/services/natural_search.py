@@ -1,10 +1,9 @@
-
-
 from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from datetime import date, timedelta
+from datetime import date, timedelta, datetime
+from dateutil import parser as date_parser
 
 from app.schemas import FlightSearchRequest
 
@@ -33,14 +32,18 @@ _AIRPORT_ALIASES = {
     "ord": "ORD",
     "chicago": "ORD",
 }
-_CITY_NAME = "(?:" + "|".join(
-    re.escape(alias)
-    for alias in sorted(
-        (alias for alias in _AIRPORT_ALIASES if len(alias) > 3),
-        key=len,
-        reverse=True,
+_CITY_NAME = (
+    "(?:"
+    + "|".join(
+        re.escape(alias)
+        for alias in sorted(
+            (alias for alias in _AIRPORT_ALIASES if len(alias) > 3),
+            key=len,
+            reverse=True,
+        )
     )
-) + ")"
+    + ")"
+)
 _LOCATION = rf"(?:{_CITY_NAME}|[A-Za-z]{{3}})"
 _ROUTE_PATTERNS = (
     re.compile(
@@ -118,6 +121,34 @@ _FLIGHT_NUMBER_PATTERNS = (
     re.compile(r"\b(?P<carrier>[A-Z]{2})\s*(?P<number>\d{1,4})\b"),
 )
 
+_MONTH_NAMES = (
+    "jan|january|feb|february|mar|march|apr|april|may|jun|june|"
+    "jul|july|aug|august|sep|sept|september|oct|october|"
+    "nov|november|dec|december"
+)
+_WEEKDAYS = "monday|tuesday|wednesday|thursday|friday|saturday|sunday"
+# Used only to detect / count date mentions (dateutil does the real parse).
+_DATE_MENTION_PATTERNS = (
+    re.compile(r"(?<!\d)\d{4}-\d{2}-\d{2}(?!\d)"),
+    re.compile(r"(?<!\d)\d{1,2}[/-]\d{1,2}[/-](?:\d{2}|\d{4})(?!\d)"),
+    re.compile(
+        rf"\b(?:{_MONTH_NAMES})\.?\s+\d{{1,2}}(?:,?\s+\d{{4}})?\b",
+        re.IGNORECASE,
+    ),
+    re.compile(r"\b(?:today|tomorrow)\b", re.IGNORECASE),
+    re.compile(rf"\bnext\s+(?:{_WEEKDAYS})\b", re.IGNORECASE),
+)
+
+_WEEKDAY_INDEX = {
+    "monday": 0,
+    "tuesday": 1,
+    "wednesday": 2,
+    "thursday": 3,
+    "friday": 4,
+    "saturday": 5,
+    "sunday": 6,
+}
+
 
 def _parse_route(query: str) -> tuple[str, str]:
     routes: set[tuple[str, str]] = set()
@@ -161,60 +192,98 @@ def _next_month_day(month: int, day: int, reference_date: date) -> date:
     raise ValueError("Invalid month and day")
 
 
+def _date_mentions(query: str) -> list[str]:
+    spans: list[tuple[int, int, str]] = []
+    for pattern in _DATE_MENTION_PATTERNS:
+        for match in pattern.finditer(query):
+            spans.append((match.start(), match.end(), match.group(0)))
+    # Drop mentions fully contained in a longer one.
+    spans.sort(key=lambda item: (item[0], -(item[1] - item[0])))
+    kept: list[str] = []
+    occupied: list[tuple[int, int]] = []
+    for start, end, text in spans:
+        if any(start >= a and end <= b for a, b in occupied):
+            continue
+        occupied.append((start, end))
+        kept.append(text)
+    return kept
+
+
+def _has_explicit_year(mention: str) -> bool:
+    return bool(re.search(r"\b(?:\d{4}|\d{1,2}[/-]\d{1,2}[/-]\d{2,4})\b", mention))
+
+
+def _parse_relative_mention(mention: str, reference_date: date) -> date | None:
+    """dateutil cannot parse today / tomorrow / next <weekday>."""
+    text = mention.strip().lower()
+    if text == "today":
+        return reference_date
+    if text == "tomorrow":
+        return reference_date + timedelta(days=1)
+    match = re.fullmatch(
+        r"next\s+(monday|tuesday|wednesday|thursday|friday|saturday|sunday)", text
+    )
+    if not match:
+        return None
+    target = _WEEKDAY_INDEX[match.group(1)]
+    days_ahead = (target - reference_date.weekday()) % 7
+    if days_ahead == 0:
+        days_ahead = 7  # "next Friday" on Friday → following week
+    return reference_date + timedelta(days=days_ahead)
+
+
 def _parse_departure_date(
     query: str, reference_date: date, *, required: bool = False
 ) -> date:
-    candidates: set[date] = set()
-
-    for match in _ISO_DATE_PATTERN.finditer(query):
-        try:
-            candidates.add(date.fromisoformat(match.group(1)))
-        except ValueError as error:
+    mentions = _date_mentions(query)
+    if not mentions:
+        if required:
             raise SearchParseError(
-                "invalid_date", "The departure date is not valid."
-            ) from error
-
-    for match in _MONTH_DATE_PATTERN.finditer(query):
-        month = _MONTHS[match.group(1).lower()]
-        day = int(match.group(2))
-        year_text = match.group(3)
-        try:
-            candidate = (
-                date(int(year_text), month, day)
-                if year_text
-                else _next_month_day(month, day, reference_date)
+                "missing_departure_date",
+                'What is the departure date? Reply with a date such as "next Friday".',
             )
-        except ValueError as error:
-            raise SearchParseError(
-                "invalid_date", "The departure date is not valid."
-            ) from error
-        candidates.add(candidate)
-
-    for match in _RELATIVE_DATE_PATTERN.finditer(query):
-        offset = 0 if match.group(1).lower() == "today" else 1
-        candidates.add(reference_date + timedelta(days=offset))
-
-    for match in _NEXT_WEEKDAY_PATTERN.finditer(query):
-        target_weekday = _WEEKDAYS[match.group(1).lower()]
-        days_ahead = (target_weekday - reference_date.weekday()) % 7
-        candidates.add(reference_date + timedelta(days=days_ahead or 7))
-
-    if not candidates and required:
-        raise SearchParseError(
-            "missing_departure_date",
-            'What is the departure date? Reply with a date such as "next Friday".',
-        )
-    if not candidates:
         return reference_date + timedelta(days=1)
-    if len(candidates) > 1:
+    if len(mentions) > 1:
         raise SearchParseError(
-            "ambiguous_date", "Include exactly one departure date."
+            "ambiguous_date",
+            "Include exactly one departure date.",
         )
+    mention = mentions[0]
+    relative = _parse_relative_mention(mention, reference_date)
+    if relative is not None:
+        departure_date = relative
+    else:
+        default = datetime.combine(reference_date, datetime.min.time())
+        try:
+            parsed = date_parser.parse(
+                mention,
+                fuzzy=False,
+                default=default,
+                dayfirst=False,
+            )
+        except (ValueError, OverflowError, TypeError):
+            raise SearchParseError(
+                "invalid_date",
+                "The departure date is not valid.",
+            ) from None
+        departure_date = parsed.date()
 
-    departure_date = next(iter(candidates))
+        if departure_date < reference_date and not _has_explicit_year(mention):
+            try:
+                departure_date = date(
+                    reference_date.year + 1,
+                    departure_date.month,
+                    departure_date.day,
+                )
+            except ValueError:
+                raise SearchParseError(
+                    "invalid_date",
+                    "The departure date is not valid.",
+                ) from None
     if departure_date < reference_date:
         raise SearchParseError(
-            "past_date", "Departure date cannot be in the past."
+            "past_date",
+            "Departure date cannot be in the past.",
         )
     return departure_date
 
@@ -238,7 +307,9 @@ def _parse_fare_paid(query: str) -> float:
 
     fare_paid = next(iter(fares))
     if fare_paid <= 0:
-        raise SearchParseError("invalid_fare_paid", "Fare paid must be greater than zero.")
+        raise SearchParseError(
+            "invalid_fare_paid", "Fare paid must be greater than zero."
+        )
     return fare_paid
 
 
@@ -299,6 +370,7 @@ def parse_natural_search(
         departure_date=departure_date,
     )
 
+
 # --------------------------------------------------------------- flexible search
 
 # IATA airline codes: two characters, letters or digits, never two digits
@@ -306,7 +378,9 @@ def parse_natural_search(
 _CARRIER = r"(?:[A-Za-z][A-Za-z0-9]|[0-9][A-Za-z])"
 _FLEX_FLIGHT_PATTERNS = (
     # "flight DL 1234", "flight f9 2272"
-    re.compile(rf"\bflight\s+(?P<carrier>{_CARRIER})\s*(?P<number>\d{{1,4}})\b", re.IGNORECASE),
+    re.compile(
+        rf"\bflight\s+(?P<carrier>{_CARRIER})\s*(?P<number>\d{{1,4}})\b", re.IGNORECASE
+    ),
     # "DL1234", "dl1234", "F92272": no space, any case
     re.compile(rf"\b(?P<carrier>{_CARRIER})(?P<number>\d{{1,4}})\b", re.IGNORECASE),
     # "DL 1234", "F9 2272": with a space, uppercase only, so "to 3" isn't a flight
@@ -315,9 +389,13 @@ _FLEX_FLIGHT_PATTERNS = (
 
 # Known airports only, so ordinary three-letter words ("the", "and") aren't
 # mistaken for airport codes.
-_KNOWN_PLACE = "(?:" + "|".join(
-    re.escape(alias) for alias in sorted(_AIRPORT_ALIASES, key=len, reverse=True)
-) + ")"
+_KNOWN_PLACE = (
+    "(?:"
+    + "|".join(
+        re.escape(alias) for alias in sorted(_AIRPORT_ALIASES, key=len, reverse=True)
+    )
+    + ")"
+)
 _FROM_PATTERN = re.compile(
     rf"\b(?:from|out of|leaving|departing)\s+(?P<place>{_KNOWN_PLACE})\b", re.IGNORECASE
 )
@@ -351,7 +429,9 @@ def _parse_flex_flight_number(query: str) -> str | None:
         for match in pattern.finditer(query)
     }
     if len(matches) > 1:
-        raise SearchParseError("ambiguous_flight_number", "Include at most one flight number.")
+        raise SearchParseError(
+            "ambiguous_flight_number", "Include at most one flight number."
+        )
     return next(iter(matches)) if matches else None
 
 
@@ -375,7 +455,9 @@ def parse_flight_search(
         if match := _TO_PATTERN.search(query):
             destination = _airport(match.group("place"))
         if origin is None and destination is None:
-            places = {_airport(m.group("place")) for m in _ANY_PLACE_PATTERN.finditer(query)}
+            places = {
+                _airport(m.group("place")) for m in _ANY_PLACE_PATTERN.finditer(query)
+            }
             if len(places) > 1:
                 raise SearchParseError(
                     "ambiguous_route",
