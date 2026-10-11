@@ -312,6 +312,12 @@ for await (const [space, message] of app.messages) {
 
     try {
       const quote = await fetchFareLockQuote(query);
+      if (!quote.flight_number) {
+        await space.send(
+          "Please include your flight number, like \"DL 123\", to get a FareLock quote.",
+        );
+        return;
+      }
       if (inboundPhone) {
         pendingQuotes.set(inboundPhone, {
           query,

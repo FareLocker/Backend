@@ -261,6 +261,12 @@ def purchase_farelock_from_photon(
         )
         raise _lock_error(error.code, error.message) from error
 
+    if parsed.flight_number is None:
+        raise _lock_error(
+            "missing_flight_number",
+            'Include your flight number, such as "DL 123".',
+        )
+
     try:
         lock, row = _purchase_farelock(
             user=user,

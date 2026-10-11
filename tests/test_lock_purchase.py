@@ -341,6 +341,34 @@ def test_photon_purchase_debits_the_account_linked_to_the_sender(
     assert listed.json()["locks"][0]["fare_id"] is None
 
 
+def test_photon_purchase_requires_a_flight_number(
+    client, db, mock_price, monkeypatch
+):
+    monkeypatch.setattr(settings, "photon_messaging_secret", "photon-test-secret")
+    user = _create_user(db, balance_cents=10_000)
+    user.phone_number = "+15551234567"
+    db.commit()
+    departure = date.today() + timedelta(days=10)
+    monkeypatch.setattr(
+        locks_router,
+        "parse_natural_farelock_quote",
+        lambda _query: SimpleNamespace(
+            origin="ATL", destination="LAX", departure_date=departure,
+            flight_number=None, fare_paid=420.0,
+        ),
+    )
+
+    response = client.post(
+        "/locks/farelock/photon-purchase",
+        headers={"X-Photon-Internal-Secret": "photon-test-secret"},
+        json={"phone_number": "+15551234567", "query": "lock my flight"},
+    )
+
+    assert response.status_code == 422
+    assert response.json()["detail"]["code"] == "missing_flight_number"
+    assert db.scalar(select(Lock).where(Lock.user_id == user.id)) is None
+
+
 def test_photon_purchase_reports_shortfall_without_creating_a_lock(
     client, db, mock_price, monkeypatch
 ):
@@ -354,7 +382,7 @@ def test_photon_purchase_reports_shortfall_without_creating_a_lock(
         "parse_natural_farelock_quote",
         lambda _query: SimpleNamespace(
             origin="ATL", destination="LAX", departure_date=departure,
-            flight_number=None, fare_paid=420.0,
+            flight_number="DL 123", fare_paid=420.0,
         ),
     )
 
