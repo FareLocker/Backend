@@ -11,6 +11,7 @@ dependencies = [
     "email-validator>=2.3.0",
     "fast-flights @ git+https://github.com/StephenSulimani/flights.git@dev",
     "fastapi[standard]>=0.143.0",
+    "google-generativeai>=0.8.0",
     "numpy>=2.5.3",
     "pandas>=3.0.6",
     "psycopg2-binary>=2.9.13",
