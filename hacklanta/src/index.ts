@@ -5,6 +5,7 @@ import {
   formatFareLockError,
   formatFareLockQuote,
 } from "./farelock";
+// Force Refresh
 // Spectrum bridges a single agent loop to many messaging interfaces.
 // Each provider in `providers` adds an interface (terminal TUI, iMessage, …).
 // Docs: https://photon.codes/docs/spectrum-ts
@@ -49,12 +50,10 @@ const sendWelcome = async (request: Request): Promise<Response> => {
     return Response.json({ error: "Invalid JSON" }, { status: 400 });
   }
 
-  const phoneNumber = typeof body.phone_number === "string"
-    ? body.phone_number.trim()
-    : "";
-  const firstName = typeof body.first_name === "string"
-    ? body.first_name.trim()
-    : "";
+  const phoneNumber =
+    typeof body.phone_number === "string" ? body.phone_number.trim() : "";
+  const firstName =
+    typeof body.first_name === "string" ? body.first_name.trim() : "";
   if (!/^\+[1-9]\d{7,14}$/.test(phoneNumber) || !firstName) {
     return Response.json(
       { error: "phone_number must be E.164 and first_name is required" },
