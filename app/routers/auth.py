@@ -48,26 +48,20 @@ def _normalize_phone_number(phone_number: str) -> str | None:
     return None
 
 
-def _provision_signup_messaging(
-    phone_number: str, first_name: str, last_name: str, email: str
-) -> dict[str, str] | None:
-    """Create the project user and return its assigned Spectrum line."""
+def _call_messaging_worker(path: str, body: dict[str, str]) -> dict[str, str] | None:
+    """POST to the Photon worker; return its photon_user_id and assigned line.
+
+    Best-effort: any failure is logged and returns None.
+    """
     if not settings.photon_messaging_url or not settings.photon_messaging_secret:
         logger.warning(
-            "Skipping Photon provisioning: worker URL or shared secret is not configured"
+            "Skipping Photon messaging: worker URL or shared secret is not configured"
         )
         return None
 
     request = Request(
-        f"{settings.photon_messaging_url.rstrip('/')}/provision-user",
-        data=json.dumps(
-            {
-                "phone_number": phone_number,
-                "first_name": first_name,
-                "last_name": last_name,
-                "email": email,
-            }
-        ).encode(),
+        f"{settings.photon_messaging_url.rstrip('/')}{path}",
+        data=json.dumps(body).encode(),
         headers={
             "Content-Type": "application/json",
             "X-Photon-Internal-Secret": settings.photon_messaging_secret,
@@ -84,14 +78,34 @@ def _provision_signup_messaging(
             photon_user_id = payload.get("photon_user_id")
             assigned_phone_number = payload.get("assigned_phone_number")
             if not isinstance(photon_user_id, str) or not isinstance(assigned_phone_number, str):
-                raise RuntimeError("Photon returned an invalid provisioning response")
+                raise RuntimeError("Photon returned an invalid response")
             return {
                 "photon_user_id": photon_user_id,
                 "assigned_phone_number": assigned_phone_number,
             }
     except (HTTPError, URLError, TimeoutError, OSError, RuntimeError) as error:
-        logger.warning("Could not provision Photon signup messaging: %s", error)
+        logger.warning("Photon messaging call %s failed: %s", path, error)
         return None
+
+
+def _provision_signup_messaging(
+    phone_number: str, first_name: str, last_name: str, email: str
+) -> dict[str, str] | None:
+    """Create the project user and return its assigned Spectrum line."""
+    return _call_messaging_worker(
+        "/provision-user",
+        {
+            "phone_number": phone_number,
+            "first_name": first_name,
+            "last_name": last_name,
+            "email": email,
+        },
+    )
+
+
+def _lookup_messaging_user(photon_user_id: str) -> dict[str, str] | None:
+    """Fetch an already-enrolled user's assigned Spectrum line by Photon id."""
+    return _call_messaging_worker("/lookup-user", {"photon_user_id": photon_user_id})
 
 
 def _user_by_email(db: Session, email: str) -> User | None:
@@ -113,9 +127,14 @@ def _messaging_response(user: User) -> MessagingSetupResponse:
 
 
 def _apply_provisioning(user: User, db: Session) -> MessagingSetupResponse:
-    result = _provision_signup_messaging(
-        user.phone_number or "", user.first_name, user.last_name, user.email
-    )
+    # Already enrolled with Photon (e.g. a retry): look the user up instead of
+    # creating them again, which Photon would reject as a duplicate.
+    if user.photon_user_id:
+        result = _lookup_messaging_user(user.photon_user_id)
+    else:
+        result = _provision_signup_messaging(
+            user.phone_number or "", user.first_name, user.last_name, user.email
+        )
     if result is None:
         user.photon_messaging_status = "unavailable"
     else:
