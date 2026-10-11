@@ -159,7 +159,7 @@ def quote_lock(
         sigma=sigma,
         n_steps=T_days,
     )
-    fee = (1.0 + lam) * V
+    fee = max((1.0 + lam) * V, float(settings.min_fee_dollars))
 
     return Quote(
         V_model=V,
