@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+from datetime import UTC, date, datetime, timedelta
+
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
 
@@ -17,7 +19,7 @@ from app.auth import (
 from app.config import settings
 from app.db import get_db
 from app.main import app
-from app.models import Base, User
+from app.models import Base, LedgerEntry, Lock, User
 from app.routers import auth as auth_router
 
 
@@ -283,5 +285,141 @@ def test_me_rejects_invalid_token(client):
     response = client.get(
         "/auth/me",
         headers={"Authorization": "Bearer not-a-real-token"},
+    )
+    assert response.status_code == 401
+
+
+def _add_lock(
+    db: Session,
+    user: User,
+    *,
+    status: str = "open",
+) -> Lock:
+    lock = Lock(
+        user_id=user.id,
+        route="ATL-LAX",
+        flight_no="DL123",
+        departure_date=date.today() + timedelta(days=10),
+        K=200.0,
+        T_days=10,
+        d0=10,
+        model_value=12.0,
+        fee=15.6,
+        lam=0.3,
+        sigma_used=0.35,
+        status=status,
+        bought_at=datetime.now(UTC),
+        settled_at=datetime.now(UTC) if status in {"exercised", "expired"} else None,
+        settle_fare=180.0 if status == "exercised" else None,
+        payout=20.0 if status == "exercised" else None,
+    )
+    db.add(lock)
+    db.commit()
+    db.refresh(lock)
+    return lock
+
+
+def test_delete_account_removes_user_and_history(client, db):
+    token = client.post("/auth/register", json=REGISTER).json()["access_token"]
+    user = db.query(User).one()
+    lock = _add_lock(db, user, status="exercised")
+    db.add(
+        LedgerEntry(
+            user_id=user.id,
+            amount_cents=-1560,
+            entry_type="lock_fee",
+            note="FareLock fee",
+            lock_id=lock.id,
+        )
+    )
+    db.add(
+        LedgerEntry(
+            user_id=user.id,
+            amount_cents=5000,
+            entry_type="recharge",
+            note="top up",
+            lock_id=None,
+        )
+    )
+    db.commit()
+
+    response = client.request(
+        "DELETE",
+        "/auth/me",
+        headers={"Authorization": f"Bearer {token}"},
+        json={"password": "password123"},
+    )
+
+    assert response.status_code == 204
+    assert response.content == b""
+    assert db.scalar(select(User).where(User.id == user.id)) is None
+    assert db.scalar(select(Lock).where(Lock.user_id == user.id)) is None
+    assert db.scalar(select(LedgerEntry).where(LedgerEntry.user_id == user.id)) is None
+
+    me = client.get("/auth/me", headers={"Authorization": f"Bearer {token}"})
+    assert me.status_code == 401
+
+
+def test_delete_account_rejects_wrong_password(client, db):
+    token = client.post("/auth/register", json=REGISTER).json()["access_token"]
+
+    response = client.request(
+        "DELETE",
+        "/auth/me",
+        headers={"Authorization": f"Bearer {token}"},
+        json={"password": "wrong-password"},
+    )
+
+    assert response.status_code == 401
+    assert response.json()["detail"] == "Invalid credentials"
+    assert db.query(User).count() == 1
+
+
+@pytest.mark.parametrize("lock_status", ["open", "pending_verification"])
+def test_delete_account_rejects_unsettled_locks(client, db, lock_status: str):
+    token = client.post("/auth/register", json=REGISTER).json()["access_token"]
+    user = db.query(User).one()
+    _add_lock(db, user, status=lock_status)
+
+    response = client.request(
+        "DELETE",
+        "/auth/me",
+        headers={"Authorization": f"Bearer {token}"},
+        json={"password": "password123"},
+    )
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == (
+        "Close or settle open FareLocks before deleting your account"
+    )
+    assert db.query(User).count() == 1
+    assert db.query(Lock).count() == 1
+
+
+def test_delete_account_rejects_positive_balance(client, db):
+    token = client.post("/auth/register", json=REGISTER).json()["access_token"]
+    user = db.query(User).one()
+    user.balance_cents = 500
+    db.commit()
+
+    response = client.request(
+        "DELETE",
+        "/auth/me",
+        headers={"Authorization": f"Bearer {token}"},
+        json={"password": "password123"},
+    )
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == (
+        "Withdraw your wallet balance before deleting your account"
+    )
+    assert db.query(User).one().balance_cents == 500
+
+
+def test_delete_account_requires_auth(client):
+    response = client.request(
+        "DELETE",
+        "/auth/me",
+        json={"password": "password123"},
     )
     assert response.status_code == 401
