@@ -13,7 +13,8 @@ class Settings(BaseSettings):
     # Photon signup messaging
     photon_messaging_url: str | None = None
     photon_messaging_secret: str | None = None
-    photon_messaging_timeout_seconds: float = 3.0
+    # Allow enroll + short allowlist retries on the Photon worker.
+    photon_messaging_timeout_seconds: float = 15.0
 
     # auth
     secret_key: str = "change-me-in-prod"

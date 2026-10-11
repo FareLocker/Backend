@@ -5,7 +5,7 @@ import {
   formatFareLockError,
   formatFareLockQuote,
 } from "./farelock";
-// Force Refresh
+
 // Spectrum bridges a single agent loop to many messaging interfaces.
 // Each provider in `providers` adds an interface (terminal TUI, iMessage, …).
 // Docs: https://photon.codes/docs/spectrum-ts
@@ -27,6 +27,85 @@ const welcomeGifPath = new URL(
   "./public/farelocker-logo-full.gif",
   import.meta.url,
 ).pathname;
+
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+const isTargetNotAllowed = (error: unknown): boolean => {
+  const text = error instanceof Error ? error.message : String(error);
+  return text.includes("Target not allowed for this project");
+};
+
+/** Shared-line allowlist: enroll before the first outbound message. */
+const enrollProjectUser = async (input: {
+  phoneNumber: string;
+  firstName: string;
+  lastName?: string;
+  email?: string;
+}): Promise<void> => {
+  const projectId = process.env.PROJECT_ID;
+  const projectSecret = process.env.PROJECT_SECRET;
+  if (!projectId || !projectSecret) {
+    throw new Error("PROJECT_ID and PROJECT_SECRET are required to enroll users");
+  }
+
+  const body: Record<string, string> = {
+    type: "shared",
+    phoneNumber: input.phoneNumber,
+    firstName: input.firstName,
+  };
+  if (input.lastName) body.lastName = input.lastName;
+  if (input.email) body.email = input.email;
+
+  const projectUser = await fetch(
+    `https://spectrum.photon.codes/projects/${encodeURIComponent(projectId)}/users/`,
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Basic ${btoa(`${projectId}:${projectSecret}`)}`,
+      },
+      body: JSON.stringify(body),
+    },
+  );
+
+  // 409 = already enrolled; still allowed to message.
+  if (!projectUser.ok && projectUser.status !== 409) {
+    const detail = (await projectUser.text()).slice(0, 300);
+    throw new Error(
+      `Could not create Photon project user (HTTP ${projectUser.status}): ${detail}`,
+    );
+  }
+};
+
+const sendWelcomeMessage = async (
+  phoneNumber: string,
+  firstName: string,
+): Promise<void> => {
+  const messaging = imessage(app);
+  const user = await messaging.user(phoneNumber);
+  const space = await messaging.space.create(user);
+
+  // Allowlist can lag briefly after enroll; retry Target-not-allowed a few times.
+  const delaysMs = [0, 500, 1500, 3000];
+  let lastError: unknown;
+  for (const delayMs of delaysMs) {
+    if (delayMs > 0) await sleep(delayMs);
+    try {
+      await space.send(
+        `Welcome to FareLocker, ${firstName}! Your account is ready.`,
+        attachment(welcomeGifPath, {
+          name: "farelocker-welcome.gif",
+          mimeType: "image/gif",
+        }),
+      );
+      return;
+    } catch (error) {
+      lastError = error;
+      if (!isTargetNotAllowed(error)) throw error;
+    }
+  }
+  throw lastError;
+};
 
 const sendWelcome = async (request: Request): Promise<Response> => {
   if (!messagingSecret) {
@@ -68,54 +147,22 @@ const sendWelcome = async (request: Request): Promise<Response> => {
     : "";
   const lastName = typeof body.last_name === "string" ? body.last_name.trim() : "";
   const email = typeof body.email === "string" ? body.email.trim() : "";
-  if (!/^\+[1-9]\d{7,14}$/.test(phoneNumber) || !firstName || !lastName || !email) {
+  if (!/^\+[1-9]\d{7,14}$/.test(phoneNumber) || !firstName) {
     return Response.json(
-      {
-        error:
-          "phone_number must be E.164; first_name, last_name, and email are required",
-      },
+      { error: "phone_number must be E.164 and first_name is required" },
       { status: 422 },
     );
   }
 
   try {
-    const projectId = process.env.PROJECT_ID!;
-    const projectSecret = process.env.PROJECT_SECRET!;
-    const projectUser = await fetch(
-      `https://spectrum.photon.codes/projects/${encodeURIComponent(projectId)}/users/`,
-      {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Basic ${btoa(`${projectId}:${projectSecret}`)}`,
-        },
-        body: JSON.stringify({
-          type: "shared",
-          phoneNumber,
-          firstName,
-          lastName,
-          email,
-        }),
-      },
-    );
-    // A duplicate means this person was already enrolled in the Photon project,
-    // which is sufficient to send the welcome message.
-    if (!projectUser.ok && projectUser.status !== 409) {
-      throw new Error(
-        `Could not create Photon project user (HTTP ${projectUser.status})`,
-      );
-    }
-
-    const messaging = imessage(app);
-    const user = await messaging.user(phoneNumber);
-    const space = await messaging.space.create(user);
-    await space.send(
-      `Welcome to FareLocker, ${firstName}! Your account is ready.`,
-      attachment(welcomeGifPath, {
-        name: "farelocker-welcome.gif",
-        mimeType: "image/gif",
-      }),
-    );
+    // 1) Allowlist on the Photon project, then 2) send the welcome iMessage.
+    await enrollProjectUser({
+      phoneNumber,
+      firstName,
+      lastName: lastName || undefined,
+      email: email || undefined,
+    });
+    await sendWelcomeMessage(phoneNumber, firstName);
     return Response.json({ sent: true });
   } catch (error) {
     console.error("Could not send signup welcome message:", error);
