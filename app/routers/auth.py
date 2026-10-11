@@ -6,15 +6,16 @@ from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, status
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
 from app.auth import CurrentUser, create_access_token, hash_password, verify_password
 from app.config import settings
 from app.db import get_db
-from app.models import User
+from app.models import LedgerEntry, Lock, User
 from app.schemas import (
     AuthenticatedUserResponse,
+    DeleteAccountRequest,
     LoginRequest,
     RegisterRequest,
     TokenResponse,
@@ -77,7 +78,9 @@ def _send_signup_welcome(
         method="POST",
     )
     try:
-        with urlopen(request, timeout=settings.photon_messaging_timeout_seconds) as response:
+        with urlopen(
+            request, timeout=settings.photon_messaging_timeout_seconds
+        ) as response:
             if response.status >= 300:
                 raise RuntimeError(f"Photon returned HTTP {response.status}")
     except (HTTPError, URLError, TimeoutError, OSError, RuntimeError) as error:
@@ -177,3 +180,45 @@ def login(body: LoginRequest, db: DbSession) -> TokenResponse:
 @router.get("/me", response_model=AuthenticatedUserResponse)
 def me(user: CurrentUser) -> AuthenticatedUserResponse:
     return _to_user_response(user)
+
+
+@router.delete("/me", status_code=status.HTTP_204_NO_CONTENT)
+def delete_account(
+    body: DeleteAccountRequest, user: CurrentUser, db: DbSession
+) -> None:
+    row = db.get(User, user.id)
+    if row is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="User not found"
+        )
+
+    if not verify_password(body.password, row.hashed_password):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid credentials"
+        )
+
+    open_lock = db.scalar(
+        select(Lock.id).where(
+            Lock.user_id == row.id, Lock.status.in_(("open", "pending_verification"))
+        )
+    )
+
+    if open_lock is not None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Close or settle open FareLocks before deleting your account",
+        )
+
+    if row.balance_cents > 0:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Withdraw your wallet balance before deleting your account",
+        )
+
+    lock_ids = list(db.scalars(select(Lock.id).where(Lock.user_id == row.id)))
+    if lock_ids:
+        db.execute(delete(LedgerEntry).where(LedgerEntry.lock_id.in_(lock_ids)))
+    db.execute(delete(LedgerEntry).where(LedgerEntry.user_id == row.id))
+    db.execute(delete(Lock).where(Lock.user_id == row.id))
+    db.delete(row)
+    db.commit()

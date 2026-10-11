@@ -389,3 +389,7 @@ class LockMarkToMarketResponse(BaseModel):
     exercisable: bool
     fare_source: Literal["provider", "stored"] | None
     currency: Literal["USD"] = "USD"
+
+
+class DeleteAccountRequest(BaseModel):
+    password: str = Field(min_length=1)
