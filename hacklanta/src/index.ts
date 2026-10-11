@@ -60,13 +60,6 @@ const sendWelcome = async (request: Request): Promise<Response> => {
     return Response.json({ error: "Invalid JSON" }, { status: 400 });
   }
 
-<<<<<<< HEAD
-  const phoneNumber =
-    typeof body.phone_number === "string" ? body.phone_number.trim() : "";
-  const firstName =
-    typeof body.first_name === "string" ? body.first_name.trim() : "";
-  if (!/^\+[1-9]\d{7,14}$/.test(phoneNumber) || !firstName) {
-=======
   const phoneNumber = typeof body.phone_number === "string"
     ? body.phone_number.trim()
     : "";
@@ -76,7 +69,6 @@ const sendWelcome = async (request: Request): Promise<Response> => {
   const lastName = typeof body.last_name === "string" ? body.last_name.trim() : "";
   const email = typeof body.email === "string" ? body.email.trim() : "";
   if (!/^\+[1-9]\d{7,14}$/.test(phoneNumber) || !firstName || !lastName || !email) {
->>>>>>> refs/remotes/origin/main
     return Response.json(
       {
         error:
