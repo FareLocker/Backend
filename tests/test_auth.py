@@ -92,13 +92,14 @@ def test_register_returns_token_and_creates_user(client, db):
     assert verify_password("password123", user.hashed_password)
 
 
-def test_register_sends_welcome_when_phone_is_supplied(client, monkeypatch):
+def test_register_provisions_messaging_when_phone_is_supplied(client, monkeypatch):
     sent: list[tuple[str, str, str, str]] = []
     monkeypatch.setattr(
         auth_router,
-        "_send_signup_welcome",
-        lambda phone_number, first_name, last_name, email: sent.append(
-            (phone_number, first_name, last_name, email)
+        "_provision_signup_messaging",
+        lambda phone_number, first_name, last_name, email: (
+            sent.append((phone_number, first_name, last_name, email))
+            or {"photon_user_id": "photon-user", "assigned_phone_number": "+15550001111"}
         ),
     )
 
@@ -106,16 +107,19 @@ def test_register_sends_welcome_when_phone_is_supplied(client, monkeypatch):
 
     assert response.status_code == 201
     assert sent == [("+15551234567", "Ada", "Lovelace", "traveler@example.com")]
+    assert response.json()["messaging"] == {
+        "status": "awaiting_start", "assigned_phone_number": "+15550001111"
+    }
 
 
 def test_register_normalizes_north_american_phone_for_photon(client, db, monkeypatch):
     sent: list[tuple[str, str, str, str]] = []
     monkeypatch.setattr(
         auth_router,
-        "_send_signup_welcome",
+        "_provision_signup_messaging",
         lambda phone_number, first_name, last_name, email: sent.append(
             (phone_number, first_name, last_name, email)
-        ),
+        ) or {"photon_user_id": "photon-user", "assigned_phone_number": "+15550001111"},
     )
 
     response = client.post(
@@ -136,25 +140,35 @@ def test_register_rejects_phone_that_cannot_be_normalized(client):
     assert "E.164" in response.json()["detail"]
 
 
-def test_register_does_not_send_welcome_without_phone(client, monkeypatch):
-    sent: list[tuple[str, str, str, str]] = []
-    monkeypatch.setattr(
-        auth_router,
-        "_send_signup_welcome",
-        lambda phone_number, first_name, last_name, email: sent.append(
-            (phone_number, first_name, last_name, email)
-        ),
+def test_register_requires_phone_for_messaging(client):
+    response = client.post("/auth/register", json={**REGISTER, "phone_number": None})
+    assert response.status_code == 422
+
+
+def test_start_returns_welcome_only_for_awaiting_user(client, db, monkeypatch):
+    monkeypatch.setattr(settings, "photon_messaging_secret", "worker-secret")
+    user = User(
+        email="start@example.com",
+        first_name="Ada",
+        last_name="Lovelace",
+        phone_number="+15551234567",
+        hashed_password=hash_password("password123"),
+        photon_messaging_status="awaiting_start",
+        photon_assigned_phone_number="+15550001111",
     )
+    db.add(user)
+    db.commit()
 
     response = client.post(
-        "/auth/register", json={**REGISTER, "phone_number": None}
+        "/auth/messaging/start?phone_number=%2B15551234567",
+        headers={"X-Photon-Internal-Secret": "worker-secret"},
     )
 
-    assert response.status_code == 201
-    assert sent == []
+    assert response.status_code == 200
+    assert response.json() == {"should_send_welcome": True, "first_name": "Ada"}
 
 
-def test_signup_welcome_uses_authenticated_photon_request(monkeypatch):
+def test_signup_provisioning_uses_authenticated_photon_request(monkeypatch):
     captured: dict[str, object] = {}
 
     class Response:
@@ -171,18 +185,20 @@ def test_signup_welcome_uses_authenticated_photon_request(monkeypatch):
         captured["body"] = request.data
         captured["secret"] = request.get_header("X-photon-internal-secret")
         captured["timeout"] = timeout
-        return Response()
+        response = Response()
+        response.read = lambda: b'{"photon_user_id":"photon-user","assigned_phone_number":"+15550001111"}'
+        return response
 
     monkeypatch.setattr(settings, "photon_messaging_url", "http://photon.test:8787")
     monkeypatch.setattr(settings, "photon_messaging_secret", "shared-secret")
     monkeypatch.setattr(auth_router, "urlopen", fake_urlopen)
 
-    auth_router._send_signup_welcome(
+    result = auth_router._provision_signup_messaging(
         "+15551234567", "Ada", "Lovelace", "traveler@example.com"
     )
 
     assert captured == {
-        "url": "http://photon.test:8787/send-welcome",
+        "url": "http://photon.test:8787/provision-user",
         "body": (
             b'{"phone_number": "+15551234567", "first_name": "Ada", '
             b'"last_name": "Lovelace", "email": "traveler@example.com"}'
@@ -190,6 +206,7 @@ def test_signup_welcome_uses_authenticated_photon_request(monkeypatch):
         "secret": "shared-secret",
         "timeout": settings.photon_messaging_timeout_seconds,
     }
+    assert result == {"photon_user_id": "photon-user", "assigned_phone_number": "+15550001111"}
 
 
 def test_register_normalizes_email(client, db):
@@ -271,6 +288,7 @@ def test_me_returns_user(client):
         "first_name": "Ada",
         "last_name": "Lovelace",
         "balance_cents": 0,
+        "messaging": {"status": "unavailable", "assigned_phone_number": None},
     }
 
 

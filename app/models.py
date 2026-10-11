@@ -139,3 +139,11 @@ class User(Base):
     hashed_password: Mapped[str] = mapped_column(String(100))
     is_admin: Mapped[bool] = mapped_column(Boolean, default=False)
     balance_cents: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    # Spectrum's project-user identity is separate from the traveler's own
+    # phone number.  Keep the onboarding state durable so a worker restart
+    # cannot lose a pending START welcome.
+    photon_user_id: Mapped[str | None] = mapped_column(String(100), unique=True)
+    photon_assigned_phone_number: Mapped[str | None] = mapped_column(String(20))
+    photon_messaging_status: Mapped[str] = mapped_column(
+        String(30), default="unavailable", server_default="unavailable"
+    )

@@ -14,7 +14,7 @@ from app.auth import create_access_token, hash_password
 from app.config import settings
 from app.db import get_db
 from app.main import app
-from app.models import Base, Lock, User
+from app.models import Base, FareSnapshot, Lock, User
 
 
 @pytest.fixture
@@ -136,6 +136,7 @@ def test_list_locks_returns_own_newest_first(client, db):
     assert locks[0]["origin"] == "ATL"
     assert locks[0]["destination"] == "LAX"
     assert locks[0]["flight_number"] == "DL123"
+    assert locks[0]["fare_id"] is None
     assert locks[0]["strike_cents"] == 20000
     assert locks[0]["fee_cents"] == 1560
     assert locks[0]["max_payout_cents"] == 10000
@@ -143,6 +144,19 @@ def test_list_locks_returns_own_newest_first(client, db):
     assert locks[0]["settle_fare_cents"] is None
     assert locks[0]["payout_cents"] is None
     assert locks[0]["currency"] == "USD"
+
+
+def test_list_locks_links_an_exact_flight_when_its_snapshot_exists(client, db):
+    user = _create_user(db)
+    lock = _add_lock(db, user)
+    fare_key = f"atl-lax-{lock.departure_date.isoformat()}-dl123"
+    db.add(FareSnapshot(id=fare_key, payload={}))
+    db.commit()
+
+    response = client.get("/locks", headers=_auth_header(user))
+
+    assert response.status_code == 200
+    assert response.json()["locks"][0]["fare_id"] == fare_key
 
 
 def test_list_locks_filters_by_status(client, db):

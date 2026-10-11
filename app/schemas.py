@@ -244,7 +244,7 @@ class RegisterRequest(BaseModel):
     password: str = Field(min_length=8, max_length=72)
     first_name: str = Field(min_length=1, max_length=50)
     last_name: str = Field(min_length=1, max_length=50)
-    phone_number: str | None = Field(default=None, max_length=20)
+    phone_number: str = Field(min_length=1, max_length=20)
 
 
 class LoginRequest(BaseModel):
@@ -257,12 +257,22 @@ class TokenResponse(BaseModel):
     token_type: str = "bearer"
 
 
+class MessagingSetupResponse(BaseModel):
+    status: Literal["awaiting_start", "connected", "unavailable"]
+    assigned_phone_number: str | None = None
+
+
+class RegistrationResponse(TokenResponse):
+    messaging: MessagingSetupResponse
+
+
 class AuthenticatedUserResponse(BaseModel):
     id: int
     email: str
     first_name: str
     last_name: str
     balance_cents: int
+    messaging: MessagingSetupResponse
 
 
 class GooglePriceHistoryPoint(BaseModel):
@@ -288,6 +298,13 @@ class FareLockPriceRequest(BaseModel):
     departure_date: date
     flight_number: str | None = None
     fare_cents: int = Field(gt=0)
+
+
+class WebsiteFareLockPurchaseRequest(BaseModel):
+    """Purchase the exact stored fare the website showed to the member."""
+
+    fare_id: str = Field(min_length=1, max_length=200)
+    expected_fee_cents: int = Field(gt=0)
 
 
 class PhotonFareLockPurchaseRequest(NaturalFareLockQuoteRequest):
@@ -354,6 +371,7 @@ class LockResponse(BaseModel):
     destination: str
     departure_date: date
     flight_number: str | None
+    fare_id: str | None
     strike_cents: int
     fee_cents: int
     max_payout_cents: int

@@ -26,7 +26,11 @@ uv sync
 uv run uvicorn app.main:app --reload
 ```
 
-The API creates tables from `app/models.py` on startup. Alembic is present but not required for local schema bootstrap.
+The API creates tables from `app/models.py` on startup. It also upgrades legacy
+`locks` tables by adding the account-ownership column required by authenticated
+lock lookups. Legacy rows remain unassigned until they are explicitly
+backfilled; newly purchased locks are assigned automatically. Alembic is
+present but not required for local schema bootstrap.
 
 ## Authentication
 
@@ -34,11 +38,19 @@ Auth is local email/password (bcrypt) with HS256 JWTs. No Supabase.
 
 | Method | Path | Notes |
 | --- | --- | --- |
-| `POST` | `/auth/register` | Body: `email`, `password`, `first_name`, `last_name`, optional `phone_number`. Returns `{ access_token, token_type }`. |
+| `POST` | `/auth/register` | Body: `email`, `password`, `first_name`, `last_name`, required `phone_number`. Returns the bearer token plus the Spectrum-assigned iMessage number when provisioning succeeds. |
 | `POST` | `/auth/login` | Body: `identifier` (email **or** phone) + `password`. Returns a bearer token. |
 | `GET` | `/auth/me` | Requires `Authorization: Bearer <access_token>`. |
 
 Search and market endpoints stay public. Wallet routes require a valid bearer token and only allow access to the signed-in user's balance (`User.balance_cents`).
+
+## iMessage onboarding
+
+Signup creates a Spectrum shared-line user with the provided phone number. The
+response includes its `assigned_phone_number`; the frontend asks the traveler to
+text `START` to that number. Spectrum then permits FareLocker to send the
+text-only welcome reply. If provisioning is unavailable, the account is still
+created and the signed-in traveler can retry setup at `/auth/messaging/retry`.
 
 ## Lock settlement worker
 

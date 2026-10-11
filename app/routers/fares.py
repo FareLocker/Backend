@@ -1,23 +1,12 @@
 """Normalized fare APIs for the FareLocker web client."""
 
 import asyncio
-from sqlalchemy import func, select
-
-from app.constants import ROUTES
-from app.models import FareObservation
-from app.schemas import FlightSearchRequest
-from app.services.natural_search import (
-    FlightSearchIntent,
-    SearchParseError,
-    parse_flight_search
-)
-
 from datetime import UTC, date, datetime
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.concurrency import run_in_threadpool
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.constants import ROUTES
@@ -31,12 +20,18 @@ from app.schemas import (
     FareSearchResponse,
     FareSearchResultResponse,
     FareTrendResponse,
+    FlightSearchRequest,
     GooglePriceHistoryPoint,
     GooglePriceHistoryResponse,
     NaturalFlightSearchRequest,
 )
 from app.services.fastflight import fetch_price_history, search_flights
-from app.services.natural_search import SearchParseError, parse_natural_search
+from app.services.natural_search import (
+    FlightSearchIntent,
+    SearchParseError,
+    parse_flight_search,
+    parse_natural_search,
+)
 from app.services.pricer import quote_lock
 
 router = APIRouter(prefix="/fares", tags=["fares"])
