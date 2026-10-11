@@ -35,6 +35,7 @@ describe("FareLock messaging", () => {
       requestBody = String(init?.body);
       return Response.json({
         id: 8, origin: "ATL", destination: "LAX", departure_date: "2026-10-16",
+        flight_number: "DL123",
         strike_cents: 28400, fee_cents: 1460, max_payout_cents: 14200,
         protection_days: 6, status: "open", balance_cents: 8540, currency: "USD",
       });
@@ -46,7 +47,17 @@ describe("FareLock messaging", () => {
     expect(JSON.parse(requestBody)).toEqual({
       phone_number: "+15551234567", query: "I booked ATL to LAX for $284",
     });
-    expect(formatFareLockPurchase(purchase)).toContain("Locked — your $284 ATL → LAX");
+    expect(purchase.flight_number).toBe("DL123");
+    expect(formatFareLockPurchase(purchase)).toContain("Locked — your DL123 $284 ATL → LAX");
+  });
+
+  test("keeps the confirmation natural when no flight number was provided", () => {
+    expect(formatFareLockPurchase({
+      id: 8, origin: "ATL", destination: "LAX", departure_date: "2026-10-16",
+      flight_number: null, strike_cents: 28400, fee_cents: 1460,
+      max_payout_cents: 14200, protection_days: 6, status: "open",
+      balance_cents: 8540, currency: "USD",
+    })).toContain("Locked — your $284 ATL → LAX");
   });
 
   test("explains the amount needed when the linked account is short", () => {

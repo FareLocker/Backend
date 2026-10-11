@@ -5,7 +5,7 @@ from typing import Annotated
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, Header, HTTPException, status
 from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
@@ -17,7 +17,9 @@ from app.schemas import (
     AuthenticatedUserResponse,
     DeleteAccountRequest,
     LoginRequest,
+    MessagingSetupResponse,
     RegisterRequest,
+    RegistrationResponse,
     TokenResponse,
 )
 
@@ -46,23 +48,18 @@ def _normalize_phone_number(phone_number: str) -> str | None:
     return None
 
 
-def _send_signup_welcome(
+def _provision_signup_messaging(
     phone_number: str, first_name: str, last_name: str, email: str
-) -> None:
-    """Ask the Photon worker to send the post-signup iMessage.
-
-    This is deliberately best-effort: the user account has already been
-    committed, and a Photon outage must not turn a successful signup into an
-    error.
-    """
+) -> dict[str, str] | None:
+    """Create the project user and return its assigned Spectrum line."""
     if not settings.photon_messaging_url or not settings.photon_messaging_secret:
         logger.warning(
-            "Skipping signup welcome: Photon messaging URL or shared secret is not configured"
+            "Skipping Photon provisioning: worker URL or shared secret is not configured"
         )
-        return
+        return None
 
     request = Request(
-        f"{settings.photon_messaging_url.rstrip('/')}/send-welcome",
+        f"{settings.photon_messaging_url.rstrip('/')}/provision-user",
         data=json.dumps(
             {
                 "phone_number": phone_number,
@@ -83,8 +80,18 @@ def _send_signup_welcome(
         ) as response:
             if response.status >= 300:
                 raise RuntimeError(f"Photon returned HTTP {response.status}")
+            payload = json.loads(response.read())
+            photon_user_id = payload.get("photon_user_id")
+            assigned_phone_number = payload.get("assigned_phone_number")
+            if not isinstance(photon_user_id, str) or not isinstance(assigned_phone_number, str):
+                raise RuntimeError("Photon returned an invalid provisioning response")
+            return {
+                "photon_user_id": photon_user_id,
+                "assigned_phone_number": assigned_phone_number,
+            }
     except (HTTPError, URLError, TimeoutError, OSError, RuntimeError) as error:
-        logger.warning("Could not send signup welcome message: %s", error)
+        logger.warning("Could not provision Photon signup messaging: %s", error)
+        return None
 
 
 def _user_by_email(db: Session, email: str) -> User | None:
@@ -95,6 +102,31 @@ def _user_by_phone(db: Session, phone_number: str) -> User | None:
     return db.scalar(select(User).where(User.phone_number == phone_number))
 
 
+def _messaging_response(user: User) -> MessagingSetupResponse:
+    status_value = user.photon_messaging_status
+    if status_value not in {"awaiting_start", "connected"}:
+        status_value = "unavailable"
+    return MessagingSetupResponse(
+        status=status_value,
+        assigned_phone_number=user.photon_assigned_phone_number,
+    )
+
+
+def _apply_provisioning(user: User, db: Session) -> MessagingSetupResponse:
+    result = _provision_signup_messaging(
+        user.phone_number or "", user.first_name, user.last_name, user.email
+    )
+    if result is None:
+        user.photon_messaging_status = "unavailable"
+    else:
+        user.photon_user_id = result["photon_user_id"]
+        user.photon_assigned_phone_number = result["assigned_phone_number"]
+        user.photon_messaging_status = "awaiting_start"
+    db.commit()
+    db.refresh(user)
+    return _messaging_response(user)
+
+
 def _to_user_response(user: User) -> AuthenticatedUserResponse:
     return AuthenticatedUserResponse(
         id=user.id,
@@ -102,36 +134,34 @@ def _to_user_response(user: User) -> AuthenticatedUserResponse:
         first_name=user.first_name,
         last_name=user.last_name,
         balance_cents=user.balance_cents,
+        messaging=_messaging_response(user),
     )
 
 
 @router.post(
-    "/register", response_model=TokenResponse, status_code=status.HTTP_201_CREATED
+    "/register", response_model=RegistrationResponse, status_code=status.HTTP_201_CREATED
 )
 def register(
     body: RegisterRequest,
-    background_tasks: BackgroundTasks,
     db: DbSession,
-) -> TokenResponse:
+) -> RegistrationResponse:
     email = body.email.lower().strip()
     if _user_by_email(db, email) is not None:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT, detail="Email already registered"
         )
 
-    phone = None
-    if body.phone_number:
-        phone = _normalize_phone_number(body.phone_number)
-        if phone is None:
-            raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-                detail=(
-                    "Enter a 10-digit U.S./Canada phone number or an "
-                    "international number in E.164 format (for example, +15551234567)"
-                ),
-            )
+    phone = _normalize_phone_number(body.phone_number)
+    if phone is None:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail=(
+                "Enter a 10-digit U.S./Canada phone number or an "
+                "international number in E.164 format (for example, +15551234567)"
+            ),
+        )
 
-    if phone is not None and _user_by_phone(db, phone) is not None:
+    if _user_by_phone(db, phone) is not None:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail="Phone number already registered",
@@ -149,16 +179,10 @@ def register(
     db.commit()
     db.refresh(user)
 
-    if phone is not None:
-        background_tasks.add_task(
-            _send_signup_welcome,
-            phone,
-            user.first_name,
-            user.last_name,
-            user.email,
-        )
-
-    return TokenResponse(access_token=create_access_token(user.id))
+    messaging = _apply_provisioning(user, db)
+    return RegistrationResponse(
+        access_token=create_access_token(user.id), messaging=messaging
+    )
 
 
 @router.post("/login", response_model=TokenResponse)
@@ -180,6 +204,45 @@ def login(body: LoginRequest, db: DbSession) -> TokenResponse:
 @router.get("/me", response_model=AuthenticatedUserResponse)
 def me(user: CurrentUser) -> AuthenticatedUserResponse:
     return _to_user_response(user)
+
+
+@router.post("/messaging/retry", response_model=MessagingSetupResponse)
+def retry_messaging(user: CurrentUser, db: DbSession) -> MessagingSetupResponse:
+    if user.photon_messaging_status in {"awaiting_start", "connected"}:
+        return _messaging_response(user)
+    return _apply_provisioning(user, db)
+
+
+def _require_internal_secret(secret: str | None) -> None:
+    if not settings.photon_messaging_secret or secret != settings.photon_messaging_secret:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Unauthorized")
+
+
+@router.post("/messaging/start")
+def begin_messaging(
+    phone_number: str,
+    db: DbSession,
+    internal_secret: str | None = Header(default=None, alias="X-Photon-Internal-Secret"),
+) -> dict[str, str | bool]:
+    """Resolve an inbound START without exposing user data publicly."""
+    _require_internal_secret(internal_secret)
+    user = _user_by_phone(db, phone_number)
+    if user is None or user.photon_messaging_status != "awaiting_start":
+        return {"should_send_welcome": False}
+    return {"should_send_welcome": True, "first_name": user.first_name}
+
+
+@router.post("/messaging/welcome-delivered", status_code=status.HTTP_204_NO_CONTENT)
+def complete_messaging(
+    phone_number: str,
+    db: DbSession,
+    internal_secret: str | None = Header(default=None, alias="X-Photon-Internal-Secret"),
+) -> None:
+    _require_internal_secret(internal_secret)
+    user = _user_by_phone(db, phone_number)
+    if user is not None and user.photon_messaging_status == "awaiting_start":
+        user.photon_messaging_status = "connected"
+        db.commit()
 
 
 @router.delete("/me", status_code=status.HTTP_204_NO_CONTENT)

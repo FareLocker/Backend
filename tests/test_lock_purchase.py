@@ -316,7 +316,7 @@ def test_photon_purchase_debits_the_account_linked_to_the_sender(
         "parse_natural_farelock_quote",
         lambda _query: SimpleNamespace(
             origin="ATL", destination="LAX", departure_date=departure,
-            flight_number=None, fare_paid=420.0,
+            flight_number="DL 123", fare_paid=420.0,
         ),
     )
 
@@ -327,11 +327,17 @@ def test_photon_purchase_debits_the_account_linked_to_the_sender(
     )
 
     assert response.status_code == 200
-    assert response.json()["balance_cents"] == 8750
-    assert db.get(Lock, response.json()["id"]).user_id == user.id
+    body = response.json()
+    assert body["balance_cents"] == 8750
+    assert body["flight_number"] == "DL123"
+    lock = db.get(Lock, body["id"])
+    assert lock is not None
+    assert lock.user_id == user.id
+    assert lock.flight_no == "DL123"
     listed = client.get("/locks", headers=_auth_header(user))
     assert listed.status_code == 200
-    assert listed.json()["locks"][0]["id"] == response.json()["id"]
+    assert listed.json()["locks"][0]["id"] == body["id"]
+    assert listed.json()["locks"][0]["flight_number"] == "DL123"
     assert listed.json()["locks"][0]["fare_id"] is None
 
 

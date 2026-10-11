@@ -15,6 +15,7 @@ export type FareLockPurchase = {
   origin: string;
   destination: string;
   departure_date: string;
+  flight_number: string | null;
   strike_cents: number;
   fee_cents: number;
   max_payout_cents: number;
@@ -85,6 +86,7 @@ function isFareLockPurchase(value: unknown): value is FareLockPurchase {
     typeof value.id === "number" &&
     typeof value.origin === "string" &&
     typeof value.destination === "string" &&
+    (typeof value.flight_number === "string" || value.flight_number === null) &&
     typeof value.strike_cents === "number" &&
     typeof value.fee_cents === "number" &&
     typeof value.balance_cents === "number";
@@ -189,8 +191,9 @@ export function formatFareLockQuote(quote: FareLockQuote): string {
 }
 
 export function formatFareLockPurchase(purchase: FareLockPurchase): string {
+  const flight = purchase.flight_number ? `${purchase.flight_number} ` : "";
   return [
-    `Locked — your ${formatDollars(purchase.strike_cents / 100)} ${purchase.origin} → ${purchase.destination} fare is protected until departure.`,
+    `Locked — your ${flight}${formatDollars(purchase.strike_cents / 100)} ${purchase.origin} → ${purchase.destination} fare is protected until departure.`,
     `We charged ${formatDollars(purchase.fee_cents / 100, 2)}. Your FareLocker balance is ${formatDollars(purchase.balance_cents / 100, 2)}.`,
   ].join("\n\n");
 }

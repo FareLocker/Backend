@@ -27,6 +27,7 @@ def init_db() -> None:
 
     Base.metadata.create_all(bind=engine)
     migrate_legacy_locks_schema()
+    migrate_users_messaging_schema()
 
 
 def migrate_legacy_locks_schema(db_engine: Engine = engine) -> None:
@@ -50,4 +51,24 @@ def migrate_legacy_locks_schema(db_engine: Engine = engine) -> None:
         connection.execute(text("ALTER TABLE locks ADD COLUMN user_id INTEGER"))
         connection.execute(
             text("CREATE INDEX IF NOT EXISTS ix_locks_user_id ON locks (user_id)")
+        )
+
+
+def migrate_users_messaging_schema(db_engine: Engine = engine) -> None:
+    """Add durable Spectrum onboarding fields to pre-messaging user tables."""
+    table_names = inspect(db_engine).get_table_names()
+    if "users" not in table_names:
+        return
+    columns = {column["name"] for column in inspect(db_engine).get_columns("users")}
+    additions = {
+        "photon_user_id": "VARCHAR(100)",
+        "photon_assigned_phone_number": "VARCHAR(20)",
+        "photon_messaging_status": "VARCHAR(30) NOT NULL DEFAULT 'unavailable'",
+    }
+    with db_engine.begin() as connection:
+        for name, definition in additions.items():
+            if name not in columns:
+                connection.execute(text(f"ALTER TABLE users ADD COLUMN {name} {definition}"))
+        connection.execute(
+            text("CREATE UNIQUE INDEX IF NOT EXISTS ix_users_photon_user_id ON users (photon_user_id)")
         )

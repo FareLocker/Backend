@@ -1,4 +1,4 @@
-import { attachment, Spectrum, type Space } from "spectrum-ts";
+import { Spectrum } from "spectrum-ts";
 import { imessage } from "@spectrum-ts/imessage";
 import {
   fetchFareLockQuote,
@@ -25,22 +25,8 @@ const app = await Spectrum({
 const messagingSecret =
   process.env.PHOTON_INTERNAL_SECRET ?? process.env.PHOTON_MESSAGING_SECRET;
 const messagingPort = Number(process.env.PHOTON_MESSAGING_PORT ?? 8787);
-const welcomeGifPath = new URL(
-  "./public/farelocker-logo-full.gif",
-  import.meta.url,
-).pathname;
-
-/** Shared Free/Pro lines often reject cold outbound until the user texts first. */
-const pendingWelcomes = new Map<string, { firstName: string; queuedAt: number }>();
 const pendingQuotes = new Map<string, { query: string; expiresAt: number }>();
 const quoteTtlMs = 5 * 60 * 1000;
-
-const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
-
-const isTargetNotAllowed = (error: unknown): boolean => {
-  const text = error instanceof Error ? error.message : String(error);
-  return text.includes("Target not allowed for this project");
-};
 
 const normalizePhone = (value: string): string | null => {
   const trimmed = value.trim();
@@ -90,21 +76,15 @@ const phoneFromInbound = (space: unknown, message: unknown): string | null => {
 };
 
 const welcomeText = (firstName: string) =>
-  `Welcome to FareLocker, ${firstName}! Your account is ready.`;
+  `Welcome to FareLocker, ${firstName}! Your account is ready. ✈️`;
 
-const welcomeAttachment = () =>
-  attachment(welcomeGifPath, {
-    name: "farelocker-welcome.gif",
-    mimeType: "image/gif",
-  });
-
-/** Shared-line allowlist: enroll before the first outbound message. */
+/** Enroll a shared-line user and return the line assigned by Spectrum. */
 const enrollProjectUser = async (input: {
   phoneNumber: string;
   firstName: string;
   lastName?: string;
   email?: string;
-}): Promise<void> => {
+}): Promise<{ photonUserId: string; assignedPhoneNumber: string }> => {
   const projectId = process.env.PROJECT_ID;
   const projectSecret = process.env.PROJECT_SECRET;
   if (!projectId || !projectSecret) {
@@ -131,73 +111,31 @@ const enrollProjectUser = async (input: {
     },
   );
 
-  // 409 = already enrolled; still allowed to message.
-  if (!projectUser.ok && projectUser.status !== 409) {
-    const detail = (await projectUser.text()).slice(0, 300);
+  const responseText = await projectUser.text();
+  let payload: unknown = null;
+  try {
+    payload = JSON.parse(responseText);
+  } catch {
+    // The diagnostic below includes the non-JSON response body.
+  }
+  const data = payload !== null && typeof payload === "object" && "data" in payload
+    ? (payload as { data: unknown }).data
+    : payload;
+  const record = data !== null && typeof data === "object"
+    ? data as Record<string, unknown>
+    : null;
+  const photonUserId = record?.id;
+  const assignedPhoneNumber = record?.assignedPhoneNumber;
+  if (!projectUser.ok || typeof photonUserId !== "string" || typeof assignedPhoneNumber !== "string") {
+    const detail = responseText.slice(0, 300);
     throw new Error(
-      `Could not create Photon project user (HTTP ${projectUser.status}): ${detail}`,
+      `Could not provision Photon project user (HTTP ${projectUser.status}): ${detail}`,
     );
   }
+  return { photonUserId, assignedPhoneNumber };
 };
 
-/** Proactive send (space.create). Fails on shared lines until the user has texted. */
-const sendWelcomeProactive = async (
-  phoneNumber: string,
-  firstName: string,
-): Promise<void> => {
-  const messaging = imessage(app);
-  const user = await messaging.user(phoneNumber);
-  const space = await messaging.space.create(user);
-
-  const delaysMs = [0, 500, 1500, 3000];
-  let lastError: unknown;
-  for (const delayMs of delaysMs) {
-    if (delayMs > 0) await sleep(delayMs);
-    try {
-      await space.send(welcomeText(firstName), welcomeAttachment());
-      return;
-    } catch (error) {
-      lastError = error;
-      if (!isTargetNotAllowed(error)) throw error;
-    }
-  }
-  throw lastError;
-};
-
-/** Reply-path send into an existing inbound space (works on shared Free/Pro). */
-const sendWelcomeInSpace = async (
-  space: Pick<Space, "send">,
-  firstName: string,
-): Promise<void> => {
-  await space.send(welcomeText(firstName), welcomeAttachment());
-};
-
-const queuePendingWelcome = (phoneNumber: string, firstName: string) => {
-  pendingWelcomes.set(phoneNumber, { firstName, queuedAt: Date.now() });
-  console.log(
-    `Queued welcome for ${phoneNumber} until they text the FareLocker line first`,
-  );
-};
-
-const flushPendingWelcome = async (
-  space: Pick<Space, "send">,
-  phoneNumber: string | null,
-): Promise<boolean> => {
-  if (!phoneNumber) return false;
-  const pending = pendingWelcomes.get(phoneNumber);
-  if (!pending) return false;
-  try {
-    await sendWelcomeInSpace(space, pending.firstName);
-    pendingWelcomes.delete(phoneNumber);
-    console.log(`Delivered queued welcome to ${phoneNumber}`);
-    return true;
-  } catch (error) {
-    console.error(`Failed to deliver queued welcome to ${phoneNumber}:`, error);
-    return false;
-  }
-};
-
-const sendWelcome = async (request: Request): Promise<Response> => {
+const provisionUser = async (request: Request): Promise<Response> => {
   if (!messagingSecret) {
     return Response.json(
       { error: "Photon messaging endpoint is not configured" },
@@ -245,29 +183,19 @@ const sendWelcome = async (request: Request): Promise<Response> => {
   }
 
   try {
-    await enrollProjectUser({
+    const enrollment = await enrollProjectUser({
       phoneNumber,
       firstName,
       lastName: lastName || undefined,
       email: email || undefined,
     });
-    await sleep(2000);
-    await sendWelcomeProactive(phoneNumber, firstName);
-    pendingWelcomes.delete(phoneNumber);
-    return Response.json({ sent: true, pending: false });
+    return Response.json({
+      photon_user_id: enrollment.photonUserId,
+      assigned_phone_number: enrollment.assignedPhoneNumber,
+    });
   } catch (error) {
-    if (isTargetNotAllowed(error)) {
-      // Shared pool: user must text the line once; deliver welcome on first inbound.
-      queuePendingWelcome(phoneNumber, firstName);
-      return Response.json({
-        sent: false,
-        pending: true,
-        message:
-          "User enrolled; welcome will send after they text the FareLocker iMessage line",
-      });
-    }
-    console.error("Could not send signup welcome message:", error);
-    return Response.json({ error: "Message delivery failed" }, { status: 502 });
+    console.error("Could not provision signup messaging:", error);
+    return Response.json({ error: "Messaging provisioning failed" }, { status: 502 });
   }
 };
 
@@ -275,8 +203,8 @@ Bun.serve({
   port: messagingPort,
   fetch: async (request) => {
     const url = new URL(request.url);
-    if (request.method === "POST" && url.pathname === "/send-welcome") {
-      return sendWelcome(request);
+    if (request.method === "POST" && url.pathname === "/provision-user") {
+      return provisionUser(request);
     }
     return new Response("Not found", { status: 404 });
   },
@@ -284,16 +212,61 @@ Bun.serve({
 
 console.log(`Photon messaging endpoint listening on port ${messagingPort}`);
 
+const farelockApiUrl = process.env.FARELOCK_API_URL ?? "http://localhost:8000";
+
+const messagingApi = async <T>(path: string, init?: RequestInit): Promise<T> => {
+  if (!messagingSecret) throw new Error("PHOTON_INTERNAL_SECRET is required");
+  const response = await fetch(new URL(path, farelockApiUrl), {
+    ...init,
+    headers: {
+      "X-Photon-Internal-Secret": messagingSecret,
+      ...init?.headers,
+    },
+  });
+  if (!response.ok) throw new Error(`FareLocker messaging API returned HTTP ${response.status}`);
+  return response.status === 204 ? undefined as T : await response.json() as T;
+};
+
+const welcomeForStart = async (phoneNumber: string): Promise<string | null> => {
+  const result = await messagingApi<{ should_send_welcome?: unknown; first_name?: unknown }>(
+    `/auth/messaging/start?phone_number=${encodeURIComponent(phoneNumber)}`,
+    { method: "POST" },
+  );
+  return result.should_send_welcome === true && typeof result.first_name === "string"
+    ? result.first_name
+    : null;
+};
+
+const markWelcomeDelivered = (phoneNumber: string) =>
+  messagingApi<void>(
+    `/auth/messaging/welcome-delivered?phone_number=${encodeURIComponent(phoneNumber)}`,
+    { method: "POST" },
+  );
+
 // `app.messages` is an async iterable. Each tick yields a `space` (the
 // conversation) and an inbound `message`. Reply by awaiting `space.send(...)`.
 for await (const [space, message] of app.messages) {
   if (message.direction === "outbound") continue;
 
   const inboundPhone = phoneFromInbound(space, message);
-  await flushPendingWelcome(space, inboundPhone);
 
   if (message.content.type !== "text") continue;
   const query = message.content.text.trim();
+
+  if (query.toUpperCase() === "START") {
+    if (!inboundPhone) continue;
+    try {
+      const firstName = await welcomeForStart(inboundPhone);
+      if (!firstName) continue;
+      await space.responding(async () => {
+        await space.send(welcomeText(firstName));
+      });
+      await markWelcomeDelivered(inboundPhone);
+    } catch (error) {
+      console.error("Could not complete START onboarding:", error);
+    }
+    continue;
+  }
 
   await space.responding(async () => {
     if (query.toUpperCase() === "LOCK") {
