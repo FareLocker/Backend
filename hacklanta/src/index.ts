@@ -28,12 +28,65 @@ const welcomeGifPath = new URL(
   import.meta.url,
 ).pathname;
 
+/** Shared Free/Pro lines often reject cold outbound until the user texts first. */
+const pendingWelcomes = new Map<string, { firstName: string; queuedAt: number }>();
+
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 const isTargetNotAllowed = (error: unknown): boolean => {
   const text = error instanceof Error ? error.message : String(error);
   return text.includes("Target not allowed for this project");
 };
+
+const normalizePhone = (value: string): string | null => {
+  const trimmed = value.trim();
+  if (/^\+[1-9]\d{7,14}$/.test(trimmed)) return trimmed;
+  const digits = trimmed.replace(/\D/g, "");
+  if (digits.length === 10) return `+1${digits}`;
+  if (digits.length === 11 && digits.startsWith("1")) return `+${digits}`;
+  if (digits.length >= 8 && digits.length <= 15) return `+${digits}`;
+  return null;
+};
+
+const phoneFromUnknown = (value: unknown): string | null => {
+  if (typeof value !== "string" || !value.trim()) return null;
+  const direct = normalizePhone(value);
+  if (direct) return direct;
+  const match = value.match(/\+[1-9]\d{7,14}/);
+  return match ? match[0] : null;
+};
+
+const phoneFromInbound = (space: unknown, message: unknown): string | null => {
+  const spaceRecord = space as Record<string, unknown>;
+  const messageRecord = message as Record<string, unknown>;
+  const sender = messageRecord.sender as Record<string, unknown> | undefined;
+
+  const candidates = [
+    sender?.id,
+    sender?.phone,
+    sender?.phoneNumber,
+    messageRecord.from,
+    spaceRecord.id,
+    spaceRecord.platformId,
+    (spaceRecord.user as Record<string, unknown> | undefined)?.id,
+    (spaceRecord.user as Record<string, unknown> | undefined)?.phoneNumber,
+  ];
+
+  for (const candidate of candidates) {
+    const phone = phoneFromUnknown(candidate);
+    if (phone) return phone;
+  }
+  return null;
+};
+
+const welcomeText = (firstName: string) =>
+  `Welcome to FareLocker, ${firstName}! Your account is ready.`;
+
+const welcomeAttachment = () =>
+  attachment(welcomeGifPath, {
+    name: "farelocker-welcome.gif",
+    mimeType: "image/gif",
+  });
 
 /** Shared-line allowlist: enroll before the first outbound message. */
 const enrollProjectUser = async (input: {
@@ -77,7 +130,8 @@ const enrollProjectUser = async (input: {
   }
 };
 
-const sendWelcomeMessage = async (
+/** Proactive send (space.create). Fails on shared lines until the user has texted. */
+const sendWelcomeProactive = async (
   phoneNumber: string,
   firstName: string,
 ): Promise<void> => {
@@ -85,19 +139,12 @@ const sendWelcomeMessage = async (
   const user = await messaging.user(phoneNumber);
   const space = await messaging.space.create(user);
 
-  // Allowlist can lag briefly after enroll; retry Target-not-allowed a few times.
   const delaysMs = [0, 500, 1500, 3000];
   let lastError: unknown;
   for (const delayMs of delaysMs) {
     if (delayMs > 0) await sleep(delayMs);
     try {
-      await space.send(
-        `Welcome to FareLocker, ${firstName}! Your account is ready.`,
-        attachment(welcomeGifPath, {
-          name: "farelocker-welcome.gif",
-          mimeType: "image/gif",
-        }),
-      );
+      await space.send(welcomeText(firstName), welcomeAttachment());
       return;
     } catch (error) {
       lastError = error;
@@ -105,6 +152,39 @@ const sendWelcomeMessage = async (
     }
   }
   throw lastError;
+};
+
+/** Reply-path send into an existing inbound space (works on shared Free/Pro). */
+const sendWelcomeInSpace = async (
+  space: { send: (...content: unknown[]) => Promise<unknown> },
+  firstName: string,
+): Promise<void> => {
+  await space.send(welcomeText(firstName), welcomeAttachment());
+};
+
+const queuePendingWelcome = (phoneNumber: string, firstName: string) => {
+  pendingWelcomes.set(phoneNumber, { firstName, queuedAt: Date.now() });
+  console.log(
+    `Queued welcome for ${phoneNumber} until they text the FareLocker line first`,
+  );
+};
+
+const flushPendingWelcome = async (
+  space: { send: (...content: unknown[]) => Promise<unknown> },
+  phoneNumber: string | null,
+): Promise<boolean> => {
+  if (!phoneNumber) return false;
+  const pending = pendingWelcomes.get(phoneNumber);
+  if (!pending) return false;
+  try {
+    await sendWelcomeInSpace(space, pending.firstName);
+    pendingWelcomes.delete(phoneNumber);
+    console.log(`Delivered queued welcome to ${phoneNumber}`);
+    return true;
+  } catch (error) {
+    console.error(`Failed to deliver queued welcome to ${phoneNumber}:`, error);
+    return false;
+  }
 };
 
 const sendWelcome = async (request: Request): Promise<Response> => {
@@ -155,18 +235,27 @@ const sendWelcome = async (request: Request): Promise<Response> => {
   }
 
   try {
-    // 1) Allowlist on the Photon project, then 2) send the welcome iMessage.
     await enrollProjectUser({
       phoneNumber,
       firstName,
       lastName: lastName || undefined,
       email: email || undefined,
     });
-    // Shared-pool allowlist can lag right after create; wait before first send.
     await sleep(2000);
-    await sendWelcomeMessage(phoneNumber, firstName);
-    return Response.json({ sent: true });
+    await sendWelcomeProactive(phoneNumber, firstName);
+    pendingWelcomes.delete(phoneNumber);
+    return Response.json({ sent: true, pending: false });
   } catch (error) {
+    if (isTargetNotAllowed(error)) {
+      // Shared pool: user must text the line once; deliver welcome on first inbound.
+      queuePendingWelcome(phoneNumber, firstName);
+      return Response.json({
+        sent: false,
+        pending: true,
+        message:
+          "User enrolled; welcome will send after they text the FareLocker iMessage line",
+      });
+    }
     console.error("Could not send signup welcome message:", error);
     return Response.json({ error: "Message delivery failed" }, { status: 502 });
   }
@@ -189,6 +278,10 @@ console.log(`Photon messaging endpoint listening on port ${messagingPort}`);
 // conversation) and an inbound `message`. Reply by awaiting `space.send(...)`.
 for await (const [space, message] of app.messages) {
   if (message.direction === "outbound") continue;
+
+  const inboundPhone = phoneFromInbound(space, message);
+  await flushPendingWelcome(space, inboundPhone);
+
   if (message.content.type !== "text") continue;
   const query = message.content.text;
 
