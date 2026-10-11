@@ -297,7 +297,12 @@ class FareLockPriceRequest(BaseModel):
     destination: str = Field(min_length=3, max_length=3)
     departure_date: date
     flight_number: str | None = None
-    fare_cents: int = Field(gt=0)
+    fare_cents: int = Field(gt=0, description="Current market fare in cents (spot).")
+    strike_cents: int | None = Field(
+        default=None,
+        gt=0,
+        description="Locked fare / strike in cents. Defaults to fare_cents when omitted.",
+    )
 
 
 class WebsiteFareLockPurchaseRequest(BaseModel):
@@ -324,6 +329,7 @@ class FareLockPriceResponse(BaseModel):
     departure_date: date
     flight_number: str | None
     fare_cents: int
+    strike_cents: int
     fee_cents: int
     max_payout_cents: int
     protection_days: int

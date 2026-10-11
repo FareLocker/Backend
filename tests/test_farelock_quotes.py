@@ -192,6 +192,7 @@ def test_farelock_price_endpoint_returns_cents_quote(
     assert response.departure_date == departure
     assert response.flight_number == "DL123"
     assert response.fare_cents == 42000
+    assert response.strike_cents == 42000
     assert response.fee_cents == 3720
     assert response.max_payout_cents == 21000
     assert response.protection_days == 10
@@ -201,6 +202,43 @@ def test_farelock_price_endpoint_returns_cents_quote(
         flight_no="DL123",
         _departure_date=departure,
         S0=420.0,
+        d0=10,
+        dow=departure.weekday(),
+        db=db,
+    )
+
+
+def test_farelock_price_endpoint_uses_custom_strike(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    departure = date.today() + timedelta(days=10)
+    pricing = MagicMock(
+        return_value=SimpleNamespace(K=400.0, fee=35.0, T_days=10)
+    )
+    monkeypatch.setattr(quotes, "quote_lock", pricing)
+    db = MagicMock()
+
+    response = quotes.farelock_price(
+        FareLockPriceRequest(
+            origin="ATL",
+            destination="LAX",
+            departure_date=departure,
+            flight_number="DL123",
+            fare_cents=42000,
+            strike_cents=40000,
+        ),
+        db,
+    )
+
+    assert response.fare_cents == 42000
+    assert response.strike_cents == 40000
+    assert response.fee_cents == 3500
+    assert response.max_payout_cents == 20000
+    pricing.assert_called_once_with(
+        route=("ATL", "LAX"),
+        flight_no="DL123",
+        _departure_date=departure,
+        S0=400.0,
         d0=10,
         dow=departure.weekday(),
         db=db,

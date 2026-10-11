@@ -131,13 +131,18 @@ def farelock_price(
     origin = request.origin.upper()
     destination = request.destination.upper()
     flight_no = _normalize_flight_number(request.flight_number)
+    strike_cents = (
+        request.strike_cents
+        if request.strike_cents is not None
+        else request.fare_cents
+    )
 
     quote = _price_farelock(
         origin=origin,
         destination=destination,
         departure_date=request.departure_date,
         flight_no=flight_no,
-        s0_dollars=request.fare_cents / 100.0,
+        s0_dollars=strike_cents / 100.0,
         db=db,
     )
     return FareLockPriceResponse(
@@ -146,6 +151,7 @@ def farelock_price(
         departure_date=request.departure_date,
         flight_number=flight_no,
         fare_cents=request.fare_cents,
+        strike_cents=strike_cents,
         fee_cents=round(quote.fee * 100),
         max_payout_cents=round(PAYOUT_CAP * quote.K * 100),
         protection_days=quote.T_days,
