@@ -298,3 +298,101 @@ def parse_natural_search(
         destination=destination,
         departure_date=departure_date,
     )
+
+# --------------------------------------------------------------- flexible search
+
+# IATA airline codes: two characters, letters or digits, never two digits
+# (DL, AA, F9, B6, 9K).
+_CARRIER = r"(?:[A-Za-z][A-Za-z0-9]|[0-9][A-Za-z])"
+_FLEX_FLIGHT_PATTERNS = (
+    # "flight DL 1234", "flight f9 2272"
+    re.compile(rf"\bflight\s+(?P<carrier>{_CARRIER})\s*(?P<number>\d{{1,4}})\b", re.IGNORECASE),
+    # "DL1234", "dl1234", "F92272": no space, any case
+    re.compile(rf"\b(?P<carrier>{_CARRIER})(?P<number>\d{{1,4}})\b", re.IGNORECASE),
+    # "DL 1234", "F9 2272": with a space, uppercase only, so "to 3" isn't a flight
+    re.compile(r"\b(?P<carrier>[A-Z][A-Z0-9]|[0-9][A-Z])\s+(?P<number>\d{1,4})\b"),
+)
+
+# Known airports only, so ordinary three-letter words ("the", "and") aren't
+# mistaken for airport codes.
+_KNOWN_PLACE = "(?:" + "|".join(
+    re.escape(alias) for alias in sorted(_AIRPORT_ALIASES, key=len, reverse=True)
+) + ")"
+_FROM_PATTERN = re.compile(
+    rf"\b(?:from|out of|leaving|departing)\s+(?P<place>{_KNOWN_PLACE})\b", re.IGNORECASE
+)
+_TO_PATTERN = re.compile(
+    rf"\b(?:to|into|arriving(?:\s+in)?)\s+(?P<place>{_KNOWN_PLACE})\b", re.IGNORECASE
+)
+_ANY_PLACE_PATTERN = re.compile(rf"\b(?P<place>{_KNOWN_PLACE})\b", re.IGNORECASE)
+
+
+@dataclass(frozen=True)
+class FlightSearchIntent:
+    """What a search box query asked for. Any part may be missing."""
+
+    origin: str | None
+    destination: str | None
+    # A place given without "from" or "to": the route can go either way.
+    either_airport: str | None
+    # Normalized like "DL 1234".
+    flight_number: str | None
+    departure_date: date
+
+
+def _airport(text: str) -> str:
+    return _AIRPORT_ALIASES.get(text.lower(), text.upper())
+
+
+def _parse_flex_flight_number(query: str) -> str | None:
+    matches = {
+        f"{match.group('carrier').upper()} {match.group('number')}"
+        for pattern in _FLEX_FLIGHT_PATTERNS
+        for match in pattern.finditer(query)
+    }
+    if len(matches) > 1:
+        raise SearchParseError("ambiguous_flight_number", "Include at most one flight number.")
+    return next(iter(matches)) if matches else None
+
+
+def parse_flight_search(
+    query: str, *, reference_date: date | None = None
+) -> FlightSearchIntent:
+    """Read whatever the query gives: a route, one airport, a flight number, a date."""
+
+    today = reference_date or date.today()
+    departure_date = _parse_departure_date(query, today)
+    flight_number = _parse_flex_flight_number(query)
+
+    origin = destination = either = None
+    try:
+        origin, destination = _parse_route(query)
+    except SearchParseError as error:
+        if error.code == "ambiguous_route":
+            raise
+        if match := _FROM_PATTERN.search(query):
+            origin = _airport(match.group("place"))
+        if match := _TO_PATTERN.search(query):
+            destination = _airport(match.group("place"))
+        if origin is None and destination is None:
+            places = {_airport(m.group("place")) for m in _ANY_PLACE_PATTERN.finditer(query)}
+            if len(places) > 1:
+                raise SearchParseError(
+                    "ambiguous_route",
+                    'Say which way you\'re flying, such as "Atlanta to Miami".',
+                ) from None
+            either = next(iter(places), None)
+
+    if not (origin or destination or either or flight_number):
+        raise SearchParseError(
+            "missing_search",
+            'Search by route, airport or flight, such as "Atlanta to Miami", '
+            '"from Atlanta tomorrow" or "DL 1234".',
+        )
+    return FlightSearchIntent(
+        origin=origin,
+        destination=destination,
+        either_airport=either,
+        flight_number=flight_number,
+        departure_date=departure_date,
+    )
