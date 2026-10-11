@@ -263,6 +263,29 @@ def test_early_exercise_rejects_non_open_lock(client, db, monkeypatch):
     assert response.json()["detail"]["code"] == "lock_not_open"
 
 
+def test_early_exercise_cannot_credit_the_same_lock_twice(client, db, monkeypatch):
+    _stub_current_fare(monkeypatch, 80.0)
+    user = _create_user(db, balance_cents=0)
+    lock = _open_lock(db, user, strike=100.0)
+    headers = _auth_header(user)
+
+    first = client.post(f"/locks/{lock.id}/exercise", headers=headers)
+    second = client.post(f"/locks/{lock.id}/exercise", headers=headers)
+
+    assert first.status_code == 200
+    assert second.status_code == 422
+    assert second.json()["detail"]["code"] == "lock_not_open"
+    db.refresh(user)
+    assert user.balance_cents == 2000
+    payouts = db.scalars(
+        select(LedgerEntry).where(
+            LedgerEntry.lock_id == lock.id,
+            LedgerEntry.entry_type == "payout",
+        )
+    ).all()
+    assert len(payouts) == 1
+
+
 def test_early_exercise_rejects_other_users_lock(client, db, monkeypatch):
     _stub_current_fare(monkeypatch, 50.0)
     owner = _create_user(db, email="owner@example.com")

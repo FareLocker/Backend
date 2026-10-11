@@ -26,7 +26,11 @@ uv sync
 uv run uvicorn app.main:app --reload
 ```
 
-The API creates tables from `app/models.py` on startup. Alembic is present but not required for local schema bootstrap.
+The API creates tables from `app/models.py` on startup. It also upgrades legacy
+`locks` tables by adding the account-ownership column required by authenticated
+lock lookups. Legacy rows remain unassigned until they are explicitly
+backfilled; newly purchased locks are assigned automatically. Alembic is
+present but not required for local schema bootstrap.
 
 ## Authentication
 

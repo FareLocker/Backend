@@ -1,4 +1,4 @@
-import { attachment, Spectrum } from "spectrum-ts";
+import { attachment, Spectrum, type Space } from "spectrum-ts";
 import { imessage } from "@spectrum-ts/imessage";
 import {
   fetchFareLockQuote,
@@ -58,6 +58,12 @@ const phoneFromUnknown = (value: unknown): string | null => {
   if (direct) return direct;
   const match = value.match(/\+[1-9]\d{7,14}/);
   return match ? match[0] : null;
+};
+
+/** Keep logs useful for support without exposing a traveler's full number. */
+const redactPhone = (phoneNumber: string | null): string => {
+  if (!phoneNumber) return "unknown";
+  return `${phoneNumber.slice(0, 2)}••••••${phoneNumber.slice(-4)}`;
 };
 
 const phoneFromInbound = (space: unknown, message: unknown): string | null => {
@@ -160,7 +166,7 @@ const sendWelcomeProactive = async (
 
 /** Reply-path send into an existing inbound space (works on shared Free/Pro). */
 const sendWelcomeInSpace = async (
-  space: { send: (...content: unknown[]) => Promise<unknown> },
+  space: Pick<Space, "send">,
   firstName: string,
 ): Promise<void> => {
   await space.send(welcomeText(firstName), welcomeAttachment());
@@ -174,7 +180,7 @@ const queuePendingWelcome = (phoneNumber: string, firstName: string) => {
 };
 
 const flushPendingWelcome = async (
-  space: { send: (...content: unknown[]) => Promise<unknown> },
+  space: Pick<Space, "send">,
   phoneNumber: string | null,
 ): Promise<boolean> => {
   if (!phoneNumber) return false;
@@ -292,8 +298,16 @@ for await (const [space, message] of app.messages) {
   await space.responding(async () => {
     if (query.toUpperCase() === "LOCK") {
       const pending = inboundPhone ? pendingQuotes.get(inboundPhone) : undefined;
+      console.info("farelock.lock.received", {
+        phone: redactPhone(inboundPhone),
+        hasPendingQuote: Boolean(pending),
+      });
       if (!inboundPhone || !pending || pending.expiresAt <= Date.now()) {
         if (inboundPhone) pendingQuotes.delete(inboundPhone);
+        console.info("farelock.lock.rejected", {
+          phone: redactPhone(inboundPhone),
+          reason: !pending ? "missing_quote" : "expired_quote",
+        });
         await space.send(
           "I don’t have an active FareLock quote. Send your flight details and fare to get one.",
         );
@@ -303,8 +317,21 @@ for await (const [space, message] of app.messages) {
       try {
         const purchase = await purchaseFareLockFromPhoton(inboundPhone, pending.query);
         pendingQuotes.delete(inboundPhone);
+        console.info("farelock.lock.purchased", {
+          phone: redactPhone(inboundPhone),
+          lockId: purchase.id,
+          feeCents: purchase.fee_cents,
+          balanceCents: purchase.balance_cents,
+        });
         await space.send(formatFareLockPurchase(purchase));
       } catch (error) {
+        console.warn("farelock.lock.failed", {
+          phone: redactPhone(inboundPhone),
+          code: error instanceof Error && "code" in error
+            ? (error as { code?: unknown }).code
+            : undefined,
+          message: error instanceof Error ? error.message : "Unknown error",
+        });
         await space.send(formatFareLockError(error));
       }
       return;
@@ -317,6 +344,12 @@ for await (const [space, message] of app.messages) {
           query,
           expiresAt: Date.now() + quoteTtlMs,
         });
+        console.info("farelock.quote.stored", {
+          phone: redactPhone(inboundPhone),
+          expiresInSeconds: quoteTtlMs / 1000,
+        });
+      } else {
+        console.warn("farelock.quote.not_stored", { reason: "sender_phone_unavailable" });
       }
       await space.send(formatFareLockQuote(quote));
     } catch (error) {

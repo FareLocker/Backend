@@ -290,6 +290,13 @@ class FareLockPriceRequest(BaseModel):
     fare_cents: int = Field(gt=0)
 
 
+class WebsiteFareLockPurchaseRequest(BaseModel):
+    """Purchase the exact stored fare the website showed to the member."""
+
+    fare_id: str = Field(min_length=1, max_length=200)
+    expected_fee_cents: int = Field(gt=0)
+
+
 class PhotonFareLockPurchaseRequest(NaturalFareLockQuoteRequest):
     """A trusted Photon request to buy a FareLock for an iMessage sender."""
 
@@ -354,6 +361,7 @@ class LockResponse(BaseModel):
     destination: str
     departure_date: date
     flight_number: str | None
+    fare_id: str | None
     strike_cents: int
     fee_cents: int
     max_payout_cents: int
