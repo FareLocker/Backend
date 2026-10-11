@@ -32,6 +32,13 @@ _AIRPORT_ALIASES = {
     "ord": "ORD",
     "chicago": "ORD",
 }
+# Longest first so "new york city" wins over "new york".
+_ALIAS_BY_LENGTH = tuple(sorted(_AIRPORT_ALIASES, key=len, reverse=True))
+_KNOWN_IATA = frozenset(_AIRPORT_ALIASES.values()) | frozenset(
+    alias.upper()
+    for alias in _AIRPORT_ALIASES
+    if len(alias) == 3 and alias.isalpha()
+)
 _CITY_NAME = (
     "(?:"
     + "|".join(
@@ -54,6 +61,11 @@ _ROUTE_PATTERNS = (
     re.compile(
         rf"\b(?P<origin>{_LOCATION})\s*(?:to|->|→)\s*"
         rf"(?P<destination>{_LOCATION})\b",
+        re.IGNORECASE,
+    ),
+    # Compact forms: ATL/JFK, ATL-JFK
+    re.compile(
+        rf"\b(?P<origin>{_LOCATION})\s*[/-]\s*(?P<destination>{_LOCATION})\b",
         re.IGNORECASE,
     ),
 )
@@ -150,33 +162,97 @@ _WEEKDAY_INDEX = {
 }
 
 
-def _parse_route(query: str) -> tuple[str, str]:
+def _normalize_location(raw: str, *, known_only: bool = False) -> str | None:
+    key = raw.lower().strip()
+    if key in _AIRPORT_ALIASES:
+        return _AIRPORT_ALIASES[key]
+    if not re.fullmatch(r"[A-Za-z]{3}", raw):
+        return None
+    code = raw.upper()
+    if known_only and code not in _KNOWN_IATA:
+        return None
+    return code
+
+
+def _mask_date_spans(query: str) -> str:
+    """Blank out date phrases so route scanning ignores them."""
+    chars = list(query)
+    for pattern in _DATE_MENTION_PATTERNS:
+        for match in pattern.finditer(query):
+            for index in range(match.start(), match.end()):
+                chars[index] = " "
+    return "".join(chars)
+
+
+def _location_mentions(query: str) -> list[str]:
+    """IATA codes in left-to-right order (known aliases / codes only)."""
+    text = _mask_date_spans(query)
+    occupied: list[tuple[int, int]] = []
+    hits: list[tuple[int, str]] = []
+
+    for alias in _ALIAS_BY_LENGTH:
+        for match in re.finditer(rf"\b{re.escape(alias)}\b", text, re.IGNORECASE):
+            start, end = match.start(), match.end()
+            if any(start < other_end and end > other_start for other_start, other_end in occupied):
+                continue
+            occupied.append((start, end))
+            hits.append((start, _AIRPORT_ALIASES[alias]))
+
+    for match in re.finditer(r"\b[A-Za-z]{3}\b", text):
+        start, end = match.start(), match.end()
+        if any(start < other_end and end > other_start for other_start, other_end in occupied):
+            continue
+        code = _normalize_location(match.group(0), known_only=True)
+        if code is None:
+            continue
+        occupied.append((start, end))
+        hits.append((start, code))
+
+    hits.sort(key=lambda item: item[0])
+    return [code for _, code in hits]
+
+
+def _routes_from_connectors(query: str) -> set[tuple[str, str]]:
     routes: set[tuple[str, str]] = set()
     for pattern in _ROUTE_PATTERNS:
         for match in pattern.finditer(query):
-            routes.add(
-                (
-                    _AIRPORT_ALIASES.get(
-                        match.group("origin").lower(), match.group("origin").upper()
-                    ),
-                    _AIRPORT_ALIASES.get(
-                        match.group("destination").lower(),
-                        match.group("destination").upper(),
-                    ),
-                )
-            )
+            origin = _normalize_location(match.group("origin"))
+            destination = _normalize_location(match.group("destination"))
+            if origin is None or destination is None:
+                continue
+            routes.add((origin, destination))
+    return routes
 
-    if not routes:
-        raise SearchParseError(
-            "missing_route",
-            'Include a route using airport codes or city names, such as "Atlanta to Miami".',
-        )
+
+def _parse_route(query: str) -> tuple[str, str]:
+    routes = _routes_from_connectors(query)
     if len(routes) > 1:
         raise SearchParseError(
             "ambiguous_route",
             "Include exactly one origin and destination route.",
         )
-    return next(iter(routes))
+    if len(routes) == 1:
+        origin, destination = next(iter(routes))
+    else:
+        codes = _location_mentions(query)
+        if len(codes) < 2:
+            raise SearchParseError(
+                "missing_route",
+                'Include a route using airport codes or city names, such as "Atlanta to Miami".',
+            )
+        if len(codes) > 2:
+            raise SearchParseError(
+                "ambiguous_route",
+                "Include exactly one origin and destination route.",
+            )
+        origin, destination = codes[0], codes[1]
+
+    if origin == destination:
+        raise SearchParseError(
+            "invalid_route",
+            "Origin and destination must be different airports.",
+        )
+    return origin, destination
 
 
 def _next_month_day(month: int, day: int, reference_date: date) -> date:
