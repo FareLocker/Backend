@@ -97,4 +97,12 @@ describe("FareLock messaging", () => {
       ),
     ).toBe("How much did you pay? Include the fare, like “for $284.”");
   });
+
+  test("asks for a flight number when a Photon purchase omits one", () => {
+    expect(
+      formatFareLockError(
+        new FareLockApiError("Include your flight number.", "missing_flight_number"),
+      ),
+    ).toBe("Please include your flight number, like “DL 123”.");
+  });
 });

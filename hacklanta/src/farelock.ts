@@ -210,6 +210,8 @@ export function formatFareLockError(error: unknown): string {
       return "What day is your flight? You can say “next Friday.”";
     case "missing_fare_paid":
       return "How much did you pay? Include the fare, like “for $284.”";
+    case "missing_flight_number":
+      return "Please include your flight number, like “DL 123”.";
     case "phone_not_linked":
       return "This iMessage number is not linked to a FareLocker account. Add it to your account, then try again.";
     case "insufficient_funds": {
