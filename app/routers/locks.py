@@ -188,13 +188,14 @@ def purchase_farelock_structured(
             status_code=status.HTTP_404_NOT_FOUND, detail="Fare not found"
         )
     fare = FareSearchResultResponse.model_validate(snapshot.payload)
+    strike_cents = request.strike_cents if request.strike_cents is not None else fare.fare_cents
     lock, row = _purchase_farelock(
         user=user,
         origin=fare.depart.airport_code,
         destination=fare.arrive.airport_code,
         departure_date=date.fromisoformat(fare.depart.local_time[:10]),
         flight_no=_normalize_flight_number(fare.flight_number),
-        s0_dollars=fare.fare_cents / 100.0,
+        s0_dollars=strike_cents / 100.0,
         db=db,
         expected_fee_cents=request.expected_fee_cents,
     )

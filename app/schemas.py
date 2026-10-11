@@ -301,10 +301,15 @@ class FareLockPriceRequest(BaseModel):
 
 
 class WebsiteFareLockPurchaseRequest(BaseModel):
-    """Purchase the exact stored fare the website showed to the member."""
+    """Purchase a FareLock on a stored fare, optionally at a custom strike."""
 
     fare_id: str = Field(min_length=1, max_length=200)
     expected_fee_cents: int = Field(gt=0)
+    strike_cents: int | None = Field(
+        default=None,
+        gt=0,
+        description="Locked fare in cents. Defaults to the snapshot fare when omitted.",
+    )
 
 
 class PhotonFareLockPurchaseRequest(NaturalFareLockQuoteRequest):
