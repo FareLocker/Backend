@@ -173,6 +173,63 @@ export async function purchaseFareLockFromPhoton(
   return payload;
 }
 
+/** A FareLock the texter confirmed with LOCK, with its exact flight. */
+export type PhotonLockRequest = {
+  origin: string;
+  destination: string;
+  departure_date: string;
+  flight_number: string;
+  fare_cents: number;
+};
+
+/** Buys a confirmed FareLock: POST /photon/users/{phone}/locks. */
+export async function purchaseFareLockForPhone(
+  phoneNumber: string,
+  request: PhotonLockRequest,
+  apiUrl = process.env.FARELOCK_API_URL ?? "http://127.0.0.1:8000",
+  secret = process.env.PHOTON_INTERNAL_SECRET ?? process.env.PHOTON_MESSAGING_SECRET,
+  fetcher: Fetcher = fetch,
+): Promise<FareLockPurchase> {
+  if (!secret) {
+    throw new FareLockApiError("FareLock purchasing is not configured.");
+  }
+
+  let response: Response;
+  try {
+    response = await fetcher(
+      new URL(`/photon/users/${encodeURIComponent(phoneNumber)}/locks`, apiUrl),
+      {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "x-photon-internal-secret": secret,
+        },
+        body: JSON.stringify(request),
+      },
+    );
+  } catch {
+    throw new FareLockApiError(
+      "FareLock is temporarily unavailable. Please try again in a moment.",
+    );
+  }
+
+  const payload: unknown = await response.json().catch(() => undefined);
+  if (!response.ok) {
+    const detail = errorDetail(payload);
+    throw new FareLockApiError(
+      detail.message ?? "FareLock could not complete your purchase right now.",
+      detail.code,
+      detail,
+    );
+  }
+  if (!isFareLockPurchase(payload)) {
+    throw new FareLockApiError(
+      "FareLock returned an invalid purchase confirmation. Please try again.",
+    );
+  }
+  return payload;
+}
+
 function formatDollars(amount: number, fractionDigits?: number): string {
   const digits = fractionDigits ?? (Number.isInteger(amount) ? 0 : 2);
   return new Intl.NumberFormat("en-US", {

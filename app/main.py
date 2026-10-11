@@ -10,6 +10,7 @@ from app.routers.auth import router as auth_router
 from app.routers.fares import router as fares_router
 from app.routers.locks import router as locks_router
 from app.routers.market import router as market_router
+from app.routers.photon import router as photon_router
 from app.routers.quotes import router as quotes_router
 from app.routers.search import router as search_router
 from app.routers.wallet import router as wallet_router
@@ -27,7 +28,24 @@ async def lifespan(_app: FastAPI):
         stop_jobs()
 
 
-app = FastAPI(title="FareLocker", lifespan=lifespan)
+app = FastAPI(
+    title="FareLocker",
+    lifespan=lifespan,
+    openapi_tags=[
+        {
+            "name": "photon",
+            "description": (
+                "Server-to-server routes for the Photon iMessage worker and its "
+                "Gemini assistant. They find the account by the texter's phone "
+                "number and require the X-Photon-Internal-Secret header. The "
+                "assistant's tools: search_flights → POST /fares/search, "
+                "get_farelock_quote → POST /quotes/farelock/price, my_locks and "
+                "my_wallet → the GET routes below; a quote the texter confirms "
+                "with LOCK is bought through POST /photon/users/{phone_number}/locks."
+            ),
+        },
+    ],
+)
 
 app.add_middleware(
     CORSMiddleware,
@@ -49,3 +67,4 @@ app.include_router(quotes_router)
 app.include_router(wallet_router)
 app.include_router(fares_router)
 app.include_router(locks_router)
+app.include_router(photon_router)

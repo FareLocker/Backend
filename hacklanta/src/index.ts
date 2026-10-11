@@ -1,11 +1,10 @@
 import { Spectrum } from "spectrum-ts";
 import { imessage } from "@spectrum-ts/imessage";
 import {
-  fetchFareLockQuote,
   formatFareLockError,
   formatFareLockPurchase,
-  formatFareLockQuote,
-  purchaseFareLockFromPhoton,
+  purchaseFareLockForPhone,
+  type PhotonLockRequest,
 } from "./farelock";
 import { runAgent } from "./agent-api";
 
@@ -26,7 +25,8 @@ const app = await Spectrum({
 const messagingSecret =
   process.env.PHOTON_INTERNAL_SECRET ?? process.env.PHOTON_MESSAGING_SECRET;
 const messagingPort = Number(process.env.PHOTON_MESSAGING_PORT ?? 8787);
-const pendingQuotes = new Map<string, { query: string; expiresAt: number }>();
+/** Locks the assistant prepared, waiting for the texter to reply LOCK. */
+const pendingQuotes = new Map<string, { request: PhotonLockRequest; expiresAt: number }>();
 const quoteTtlMs = 5 * 60 * 1000;
 
 const normalizePhone = (value: string): string | null => {
@@ -373,7 +373,7 @@ for await (const [space, message] of app.messages) {
       }
 
       try {
-        const purchase = await purchaseFareLockFromPhoton(inboundPhone, pending.query);
+        const purchase = await purchaseFareLockForPhone(inboundPhone, pending.request);
         pendingQuotes.delete(inboundPhone);
         console.info("farelock.lock.purchased", {
           phone: redactPhone(inboundPhone),
@@ -397,7 +397,20 @@ for await (const [space, message] of app.messages) {
 
     // Everything else goes to the AI assistant.
     try {
-      const reply = await runAgent(query);
+      const reply = await runAgent({
+        chatId: inboundPhone ?? String((space as { id?: unknown }).id ?? "unknown"),
+        phone: inboundPhone,
+        text: query,
+        // The assistant prepared a lock: the texter confirms by replying LOCK.
+        onFareLockPrepared: (request) => {
+          if (!inboundPhone) return;
+          pendingQuotes.set(inboundPhone, { request, expiresAt: Date.now() + quoteTtlMs });
+          console.info("farelock.quote.stored", {
+            phone: redactPhone(inboundPhone),
+            expiresInSeconds: quoteTtlMs / 1000,
+          });
+        },
+      });
       await space.send(reply);
     } catch (error) {
       console.error("farelock.agent.failed", error);
