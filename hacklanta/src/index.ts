@@ -162,6 +162,8 @@ const sendWelcome = async (request: Request): Promise<Response> => {
       lastName: lastName || undefined,
       email: email || undefined,
     });
+    // Shared-pool allowlist can lag right after create; wait before first send.
+    await sleep(2000);
     await sendWelcomeMessage(phoneNumber, firstName);
     return Response.json({ sent: true });
   } catch (error) {
