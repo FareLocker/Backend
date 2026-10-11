@@ -16,6 +16,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.models import FareObservation, LedgerEntry, Lock, User
+from app.services import sim_flights
 from app.services.fastflight import search_flights
 from app.services.pricer import PAYOUT_CAP
 
@@ -27,7 +28,7 @@ ORIGIN_TIMEZONES = {
     "ORD": "America/Chicago",
 }
 
-FareSource = Literal["provider", "stored"]
+FareSource = Literal["provider", "stored", "sim"]
 
 logger = logging.getLogger(__name__)
 
@@ -51,6 +52,9 @@ def _compute_payout_dollars(strike: float, settle_fare: float) -> float:
 
 def _provider_fare(lock: Lock) -> float | None:
     origin, destination = lock.route.split("-")
+    if lock.flight_no is not None and sim_flights.is_sim(lock.flight_no):
+        return sim_flights.price_at(lock.flight_no)
+
     results = search_flights(
         origin=origin,
         destination=destination,
@@ -58,6 +62,7 @@ def _provider_fare(lock: Lock) -> float | None:
         adults=1,
         seat="economy",
         currency="USD",
+        flight_number=lock.flight_no,
     )
     prices: list[float] = []
     for itinerary in results:
@@ -188,7 +193,13 @@ def settle_lock(
 def _resolve_current_fare(
     lock: Lock, db: Session
 ) -> tuple[float | None, FareSource | None]:
-    """Live provider fare, then stored observation after purchase."""
+    """Live provider/sim fare, then stored observation after purchase."""
+    if lock.flight_no is not None and sim_flights.is_sim(lock.flight_no):
+        try:
+            return sim_flights.price_at(lock.flight_no), "sim"
+        except Exception:
+            return None, None
+
     try:
         provider = _provider_fare(lock)
     except Exception:
