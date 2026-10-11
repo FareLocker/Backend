@@ -4,7 +4,9 @@ import {
   FareLockApiError,
   fetchFareLockQuote,
   formatFareLockError,
+  formatFareLockPurchase,
   formatFareLockQuote,
+  purchaseFareLockFromPhoton,
 } from "./farelock";
 
 const quote = {
@@ -23,7 +25,46 @@ describe("FareLock messaging", () => {
   test("formats the concise price-drop-protection quote", () => {
     expect(formatFareLockQuote(quote)).toBe(
       "FareLock for your $284 ATL → LAX flight costs $14.60.\n\n" +
-        "If the fare drops before your trip, we’ll cover the difference—up to $142.",
+        "If the fare drops before your trip, we’ll cover the difference—up to $142. Reply LOCK within 5 minutes to purchase.",
+    );
+  });
+
+  test("purchases from the account linked to the iMessage sender", async () => {
+    let requestBody = "";
+    const fetcher = async (_input: string | URL, init?: RequestInit) => {
+      requestBody = String(init?.body);
+      return Response.json({
+        id: 8, origin: "ATL", destination: "LAX", departure_date: "2026-10-16",
+        flight_number: "DL123",
+        strike_cents: 28400, fee_cents: 1460, max_payout_cents: 14200,
+        protection_days: 6, status: "open", balance_cents: 8540, currency: "USD",
+      });
+    };
+
+    const purchase = await purchaseFareLockFromPhoton(
+      "+15551234567", "I booked ATL to LAX for $284", "https://api.example.test", "secret", fetcher,
+    );
+    expect(JSON.parse(requestBody)).toEqual({
+      phone_number: "+15551234567", query: "I booked ATL to LAX for $284",
+    });
+    expect(purchase.flight_number).toBe("DL123");
+    expect(formatFareLockPurchase(purchase)).toContain("Locked — your DL123 $284 ATL → LAX");
+  });
+
+  test("keeps the confirmation natural when no flight number was provided", () => {
+    expect(formatFareLockPurchase({
+      id: 8, origin: "ATL", destination: "LAX", departure_date: "2026-10-16",
+      flight_number: null, strike_cents: 28400, fee_cents: 1460,
+      max_payout_cents: 14200, protection_days: 6, status: "open",
+      balance_cents: 8540, currency: "USD",
+    })).toContain("Locked — your $284 ATL → LAX");
+  });
+
+  test("explains the amount needed when the linked account is short", () => {
+    expect(formatFareLockError(new FareLockApiError("too low", "insufficient_funds", {
+      balance_cents: 800, fee_cents: 1250, shortfall_cents: 450,
+    }))).toBe(
+      "Your FareLock costs $12.50, but your FareLocker balance is $8.00. Add $4.50 or more, then reply LOCK again.",
     );
   });
 
@@ -55,5 +96,13 @@ describe("FareLock messaging", () => {
         new FareLockApiError("Include the amount paid.", "missing_fare_paid"),
       ),
     ).toBe("How much did you pay? Include the fare, like “for $284.”");
+  });
+
+  test("asks for a flight number when a Photon purchase omits one", () => {
+    expect(
+      formatFareLockError(
+        new FareLockApiError("Include your flight number.", "missing_flight_number"),
+      ),
+    ).toBe("Please include your flight number, like “DL 123”.");
   });
 });

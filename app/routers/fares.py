@@ -1,11 +1,12 @@
 """Normalized fare APIs for the FareLocker web client."""
 
+import asyncio
 from datetime import UTC, date, datetime
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.concurrency import run_in_threadpool
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.constants import ROUTES
@@ -19,13 +20,19 @@ from app.schemas import (
     FareSearchResponse,
     FareSearchResultResponse,
     FareTrendResponse,
+    FlightSearchRequest,
     GooglePriceHistoryPoint,
     GooglePriceHistoryResponse,
     NaturalFlightSearchRequest,
 )
 from app.services import sim_flights
 from app.services.fastflight import fetch_price_history, search_flights
-from app.services.natural_search import SearchParseError, parse_natural_search
+from app.services.natural_search import (
+    FlightSearchIntent,
+    SearchParseError,
+    parse_flight_search,
+    parse_natural_search,
+)
 from app.services.pricer import quote_lock
 
 router = APIRouter(prefix="/fares", tags=["fares"])
@@ -236,47 +243,111 @@ def _deduplicate_results(results: list[FareSearchResultResponse]) -> list[FareSe
             unique[result.id] = result
     return list(unique.values())
 
+# How many Google searches one request may run at once.
+MAX_PARALLEL_SEARCHES = 4
+
+
+def _routes_for_flight(db: Session, flight_number: str) -> list[tuple[str, str]]:
+    """Routes the scraper has seen this flight number on, e.g. [("ATL", "MIA")]."""
+    compact = "".join(flight_number.upper().split())
+    rows = db.execute(
+        select(FareObservation.origin, FareObservation.dest)
+        .where(func.replace(func.upper(FareObservation.flight_no), " ", "") == compact)
+        .distinct()
+    ).all()
+    return [(origin, dest) for origin, dest in rows]
+
+
+def _plan_searches(intent: FlightSearchIntent, db: Session) -> list[FlightSearchRequest]:
+    """Turn a partial query into one Google search per route that could match."""
+    if intent.origin and intent.destination:
+        # A full route works as before, even outside ROUTES.
+        routes = [(intent.origin, intent.destination)]
+    else:
+        candidates = list(ROUTES)
+        if intent.flight_number:
+            # Where we've seen this flight before saves searching every route.
+            candidates = _routes_for_flight(db, intent.flight_number) or candidates
+        routes = [
+            (origin, dest)
+            for origin, dest in candidates
+            if intent.origin in (None, origin)
+            and intent.destination in (None, dest)
+            and intent.either_airport in (None, origin, dest)
+        ]
+    if not routes:
+        raise SearchParseError(
+            "unsupported_route",
+            "We don't track flights there yet. Try a route like Atlanta to Miami.",
+        )
+    return [
+        FlightSearchRequest(
+            origin=origin,
+            destination=dest,
+            departure_date=intent.departure_date,
+            flight_number=intent.flight_number,
+            max_stops=0,  # nonstop only, like the scraper and the lock pricing
+        )
+        for origin, dest in routes
+    ]
+
 
 # Look for search issue here
 @router.post("/search", response_model=FareSearchResponse)
 async def search_fares(
     request: NaturalFlightSearchRequest, db: DbSession
 ) -> FareSearchResponse:
-    """Search live itineraries and enrich each result with local price history."""
+    """Search by route, one airport, a flight number and/or a date."""
     try:
-        parsed = parse_natural_search(request.query)
+        intent = parse_flight_search(request.query)
+        searches = _plan_searches(intent, db)
     except SearchParseError as error:
         raise HTTPException(
             status_code=422, detail={"code": error.code, "message": error.message}
         ) from error
-    try:
-        itineraries = await run_in_threadpool(
-            search_flights, **parsed.model_dump(exclude={"context"})
-        )
-    except ValueError as error:
-        raise HTTPException(
-            status_code=422,
-            detail={"code": "invalid_search", "message": str(error)},
-        ) from error
-    except Exception as error:
+
+    gate = asyncio.Semaphore(MAX_PARALLEL_SEARCHES)
+
+    async def run(search: FlightSearchRequest):
+        async with gate:
+            return await run_in_threadpool(
+                search_flights, **search.model_dump(exclude={"context"})
+            )
+
+    outcomes = await asyncio.gather(*(run(s) for s in searches), return_exceptions=True)
+    itineraries = [
+        itinerary
+        for outcome in outcomes
+        if not isinstance(outcome, BaseException)
+        for itinerary in outcome
+    ]
+    if outcomes and all(isinstance(outcome, BaseException) for outcome in outcomes):
+        # A ValueError means the search itself was invalid, not that the
+        # provider is down: say so, like a single search always has.
+        invalid = next((o for o in outcomes if isinstance(o, ValueError)), None)
+        if invalid is not None:
+            raise HTTPException(
+                status_code=422,
+                detail={"code": "invalid_search", "message": str(invalid)},
+            ) from invalid
         raise HTTPException(
             status_code=503,
             detail={
                 "code": "search_unavailable",
                 "message": "Flight search is temporarily unavailable. Please try again later.",
             },
-        ) from error
+        )
 
     normalized_results = [
-        normalized for itinerary in itineraries
-        if (normalized := _normalize_itinerary(itinerary, parsed.departure_date, db)) is not None
+        normalized
+        for itinerary in itineraries
+        if (normalized := _normalize_itinerary(itinerary, intent.departure_date, db)) is not None
     ]
     results = _deduplicate_results(normalized_results)
     for result in results:
         _store_snapshot(db, result)
     db.commit()
     return FareSearchResponse(results=results)
-
 
 @router.get("/price-history", response_model=GooglePriceHistoryResponse)
 async def price_history(

@@ -24,6 +24,11 @@ bun start
 
 ## FareLock messages
 
+When a traveler signs up on FareLocker, the API creates their Spectrum project
+user and returns the `assignedPhoneNumber` from Photon. The traveler must text
+`START` from their registered phone before this shared iMessage line can reply;
+the worker then sends the FareLocker welcome message.
+
 Text FareLock naturally, for example:
 
 ```text

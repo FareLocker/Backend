@@ -19,12 +19,36 @@ REFERENCE_DATE = date(2026, 10, 9)  # Friday
         "flights from atl to lax",
         "ATL -> LAX",
         "show me ATL → LAX tomorrow",
+        "ATL LAX",
+        "atl lax",
+        "flights ATL LAX tomorrow",
+        "ATL/LAX",
+        "ATL-LAX",
     ],
 )
 def test_parses_supported_route_forms(query: str) -> None:
     request = parse_natural_search(query, reference_date=REFERENCE_DATE)
     assert request.origin == "ATL"
     assert request.destination == "LAX"
+
+
+@pytest.mark.parametrize(
+    ("query", "origin", "destination"),
+    [
+        ("Atlanta Miami", "ATL", "MIA"),
+        ("New York to Miami", "JFK", "MIA"),
+        ("New York Miami", "JFK", "MIA"),
+        ("ATL JFK", "ATL", "JFK"),
+        ("JFK ATL", "JFK", "ATL"),
+        ("show me atlanta lax next Friday", "ATL", "LAX"),
+    ],
+)
+def test_parses_city_names_and_juxtaposed_routes(
+    query: str, origin: str, destination: str
+) -> None:
+    request = parse_natural_search(query, reference_date=REFERENCE_DATE)
+    assert request.origin == origin
+    assert request.destination == destination
 
 
 @pytest.mark.parametrize(
@@ -67,7 +91,11 @@ def test_month_day_rolls_into_next_year() -> None:
     ("query", "code"),
     [
         ("find me a flight tomorrow", "missing_route"),
+        ("ATL", "missing_route"),
         ("ATL to LAX and JFK to MIA", "ambiguous_route"),
+        ("ATL JFK MIA", "ambiguous_route"),
+        ("ATL to ATL", "invalid_route"),
+        ("ATL ATL", "invalid_route"),
         ("ATL to LAX February 30", "invalid_date"),
         ("ATL to LAX tomorrow next Friday", "ambiguous_date"),
         ("ATL to LAX 2026-10-08", "past_date"),
@@ -77,6 +105,7 @@ def test_rejects_unresolvable_queries(query: str, code: str) -> None:
     with pytest.raises(SearchParseError) as caught:
         parse_natural_search(query, reference_date=REFERENCE_DATE)
     assert caught.value.code == code
+
 
 
 def test_natural_and_structured_search_use_identical_provider_args(

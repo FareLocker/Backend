@@ -245,7 +245,7 @@ class RegisterRequest(BaseModel):
     password: str = Field(min_length=8, max_length=72)
     first_name: str = Field(min_length=1, max_length=50)
     last_name: str = Field(min_length=1, max_length=50)
-    phone_number: str | None = Field(default=None, max_length=20)
+    phone_number: str = Field(min_length=1, max_length=20)
 
 
 class LoginRequest(BaseModel):
@@ -258,12 +258,22 @@ class TokenResponse(BaseModel):
     token_type: str = "bearer"
 
 
+class MessagingSetupResponse(BaseModel):
+    status: Literal["awaiting_start", "connected", "unavailable"]
+    assigned_phone_number: str | None = None
+
+
+class RegistrationResponse(TokenResponse):
+    messaging: MessagingSetupResponse
+
+
 class AuthenticatedUserResponse(BaseModel):
     id: int
     email: str
     first_name: str
     last_name: str
     balance_cents: int
+    messaging: MessagingSetupResponse
 
 
 class GooglePriceHistoryPoint(BaseModel):
@@ -288,7 +298,30 @@ class FareLockPriceRequest(BaseModel):
     destination: str = Field(min_length=3, max_length=3)
     departure_date: date
     flight_number: str | None = None
-    fare_cents: int = Field(gt=0)
+    fare_cents: int = Field(gt=0, description="Current market fare in cents (spot).")
+    strike_cents: int | None = Field(
+        default=None,
+        gt=0,
+        description="Locked fare / strike in cents. Defaults to fare_cents when omitted.",
+    )
+
+
+class WebsiteFareLockPurchaseRequest(BaseModel):
+    """Purchase a FareLock on a stored fare, optionally at a custom strike."""
+
+    fare_id: str = Field(min_length=1, max_length=200)
+    expected_fee_cents: int = Field(gt=0)
+    strike_cents: int | None = Field(
+        default=None,
+        gt=0,
+        description="Locked fare in cents. Defaults to the snapshot fare when omitted.",
+    )
+
+
+class PhotonFareLockPurchaseRequest(NaturalFareLockQuoteRequest):
+    """A trusted Photon request to buy a FareLock for an iMessage sender."""
+
+    phone_number: str = Field(min_length=8, max_length=20)
 
 
 class FareLockPriceResponse(BaseModel):
@@ -297,6 +330,7 @@ class FareLockPriceResponse(BaseModel):
     departure_date: date
     flight_number: str | None
     fare_cents: int
+    strike_cents: int
     fee_cents: int
     max_payout_cents: int
     protection_days: int
@@ -349,6 +383,7 @@ class LockResponse(BaseModel):
     destination: str
     departure_date: date
     flight_number: str | None
+    fare_id: str | None
     strike_cents: int
     fee_cents: int
     max_payout_cents: int
@@ -384,3 +419,7 @@ class LockMarkToMarketResponse(BaseModel):
     exercisable: bool
     fare_source: Literal["provider", "stored", "sim"] | None
     currency: Literal["USD"] = "USD"
+
+
+class DeleteAccountRequest(BaseModel):
+    password: str = Field(min_length=1)

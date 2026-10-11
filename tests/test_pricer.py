@@ -102,3 +102,82 @@ def test_quote_lock_wires_fee_and_loading():
     assert q.lam == pytest.approx(settings.base_lambda)
     assert q.fee == pytest.approx((1.0 + settings.base_lambda) * q.V_model)
     assert q.V_model > 0.0
+
+
+def test_quote_lock_applies_minimum_fee_floor():
+    curve = SimpleNamespace(params={}, flight_premia={})
+
+    def fake_f_flight(d, dow, hol, flight_no):
+        return 124.0
+
+    db = MagicMock()
+    with (
+        patch("app.services.pricer.load_latest_curve", return_value=curve),
+        patch("app.services.pricer.make_f_flight", return_value=fake_f_flight),
+        # Near-zero vol → loaded model fee would be << $1 without a floor.
+        patch("app.services.pricer.get_sigma", return_value=0.01),
+    ):
+        q = quote_lock(
+            route=("ATL", "LAX"),
+            flight_no="F93215",
+            _departure_date=date(2026, 10, 24),
+            S0=124.0,
+            K=100.0,
+            d0=13,
+            dow=5,
+            db=db,
+        )
+
+    assert q.V_model < settings.min_fee_dollars
+    assert q.fee == pytest.approx(settings.min_fee_dollars)
+
+
+def test_quote_lock_separate_strike_deep_itm_hits_payout_cap():
+    """Spot $124 / strike $1000 must not price like an ATM lock at the strike."""
+    curve = SimpleNamespace(params={}, flight_premia={})
+    db = MagicMock()
+
+    def fake_f_at(level: float):
+        def _f(d, dow, hol, flight_no):
+            return level
+
+        return _f
+
+    with (
+        patch("app.services.pricer.load_latest_curve", return_value=curve),
+        patch("app.services.pricer.get_sigma", return_value=0.10),
+    ):
+        with patch(
+            "app.services.pricer.make_f_flight", return_value=fake_f_at(124.0)
+        ):
+            deep_itm = quote_lock(
+                route=("ATL", "LAX"),
+                flight_no="F93215",
+                _departure_date=date(2026, 10, 24),
+                S0=124.0,
+                K=1000.0,
+                d0=13,
+                dow=5,
+                db=db,
+            )
+        with patch(
+            "app.services.pricer.make_f_flight", return_value=fake_f_at(1000.0)
+        ):
+            atm_at_strike = quote_lock(
+                route=("ATL", "LAX"),
+                flight_no="F93215",
+                _departure_date=date(2026, 10, 24),
+                S0=1000.0,
+                d0=13,
+                dow=5,
+                db=db,
+            )
+
+    assert deep_itm.K == 1000.0
+    assert deep_itm.X0 == pytest.approx(1.0)
+    # Intrinsic is capped at 0.5 * K = $500; fee applies inventory loading.
+    assert deep_itm.V_model == pytest.approx(PAYOUT_CAP * 1000.0)
+    assert deep_itm.fee == pytest.approx(
+        (1.0 + settings.base_lambda) * PAYOUT_CAP * 1000.0
+    )
+    assert deep_itm.fee > atm_at_strike.fee * 2

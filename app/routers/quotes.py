@@ -42,11 +42,13 @@ def _price_farelock(
     flight_no: str | None,
     s0_dollars: float,
     db: Session,
+    strike_dollars: float | None = None,
 ) -> Quote:
     """Shared FareLock pricing: route/window checks + quote_lock."""
     origin = origin.upper()
     destination = destination.upper()
     route = (origin, destination)
+    strike = s0_dollars if strike_dollars is None else strike_dollars
 
     if route not in ROUTES:
         raise _quote_error(
@@ -72,6 +74,7 @@ def _price_farelock(
             flight_no=flight_no,
             _departure_date=departure_date,
             S0=s0_dollars,
+            K=strike,
             d0=protection_days,
             dow=departure_date.weekday(),
             db=db,
@@ -131,6 +134,11 @@ def farelock_price(
     origin = request.origin.upper()
     destination = request.destination.upper()
     flight_no = _normalize_flight_number(request.flight_number)
+    strike_cents = (
+        request.strike_cents
+        if request.strike_cents is not None
+        else request.fare_cents
+    )
 
     quote = _price_farelock(
         origin=origin,
@@ -138,6 +146,7 @@ def farelock_price(
         departure_date=request.departure_date,
         flight_no=flight_no,
         s0_dollars=request.fare_cents / 100.0,
+        strike_dollars=strike_cents / 100.0,
         db=db,
     )
     return FareLockPriceResponse(
@@ -146,6 +155,7 @@ def farelock_price(
         departure_date=request.departure_date,
         flight_number=flight_no,
         fare_cents=request.fare_cents,
+        strike_cents=strike_cents,
         fee_cents=round(quote.fee * 100),
         max_payout_cents=round(PAYOUT_CAP * quote.K * 100),
         protection_days=quote.T_days,

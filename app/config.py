@@ -23,6 +23,7 @@ class Settings(BaseSettings):
     # pricing economics
     base_lambda: float = 0.30  # inventory loading
     vol_prior: float = 0.35  # vol shrinkage prior
+    min_fee_dollars: float = 1.0  # floor on quoted FareLock fee
 
     # scheduler cadence
     refit_interval_minutes: int = 60

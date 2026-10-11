@@ -105,24 +105,29 @@ def quote_lock(
     route: tuple[str, str],
     flight_no: str | None,
     _departure_date: date,
-    S0: float,  # current fare = strike K
-    d0: int,    # days to departure at purchase
+    S0: float,  # current market fare (spot)
+    d0: int,  # days to departure at purchase
     dow: int,
     hol: int = 0,
+    K: float | None = None,  # strike; defaults to S0 (ATM)
     db: Session,
 ) -> Quote:
     """Price a FareLock: CRR American put + (1 + lambda) loading.
 
     Loads the latest curve fit for the route, builds f_flight,
-    sets K = S0, X0 = S0 / f_flight(d0, ...), pulls sigma for the
-    current d-bucket, runs american_put_crr over T = d0 daily
-    steps, and applies base_lambda inventory loading.
+    sets X0 = S0 / f_flight(d0, ...), uses K (defaulting to S0),
+    pulls sigma for the current d-bucket, runs american_put_crr
+    over T = d0 daily steps, and applies base_lambda inventory loading.
 
     departure_date is accepted for the quote API / Lock row; the
     lattice uses d0/dow/hol (dow frozen at purchase).
     """
     if S0 <= 0:
         raise ValueError("S0 must be positive")
+    if K is None:
+        K = S0
+    if K <= 0:
+        raise ValueError("K must be positive")
     if d0 < 0:
         raise ValueError("d0 must be >= 0")
 
@@ -141,7 +146,6 @@ def quote_lock(
         raise ValueError("f_flight returned non-positive level")
 
     X0 = S0 / f0
-    K = S0
     T_days = d0
     # Average bucket sigma along the remaining d path (still one CRR sigma).
     sigmas = [get_sigma(route, max(d0 - i, 1), db) for i in range(T_days + 1)]
@@ -155,7 +159,7 @@ def quote_lock(
         sigma=sigma,
         n_steps=T_days,
     )
-    fee = (1.0 + lam) * V
+    fee = max((1.0 + lam) * V, float(settings.min_fee_dollars))
 
     return Quote(
         V_model=V,
