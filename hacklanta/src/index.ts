@@ -79,11 +79,16 @@ const sendWelcome = async (request: Request): Promise<Response> => {
   }
 
   try {
+    const projectId = process.env.PROJECT_ID!;
+    const projectSecret = process.env.PROJECT_SECRET!;
     const projectUser = await fetch(
-      `https://spectrum.photon.codes/projects/${encodeURIComponent(process.env.PROJECT_ID!)}/users/`,
+      `https://spectrum.photon.codes/projects/${encodeURIComponent(projectId)}/users/`,
       {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Basic ${btoa(`${projectId}:${projectSecret}`)}`,
+        },
         body: JSON.stringify({
           type: "shared",
           phoneNumber,
