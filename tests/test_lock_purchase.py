@@ -205,6 +205,7 @@ def test_purchase_rejects_insufficient_funds(client, db, mock_price):
     assert detail["code"] == "insufficient_funds"
     assert detail["balance_cents"] == 100
     assert detail["fee_cents"] == 1250
+    assert detail["shortfall_cents"] == 1150
 
     db.refresh(user)
     assert user.balance_cents == 100
@@ -224,3 +225,59 @@ def test_purchase_requires_auth(client, db):
         },
     )
     assert response.status_code == 401
+
+
+def test_photon_purchase_debits_the_account_linked_to_the_sender(
+    client, db, mock_price, monkeypatch
+):
+    monkeypatch.setattr(settings, "photon_messaging_secret", "photon-test-secret")
+    user = _create_user(db, balance_cents=10_000)
+    user.phone_number = "+15551234567"
+    db.commit()
+    departure = date.today() + timedelta(days=10)
+    monkeypatch.setattr(
+        locks_router,
+        "parse_natural_farelock_quote",
+        lambda _query: SimpleNamespace(
+            origin="ATL", destination="LAX", departure_date=departure,
+            flight_number=None, fare_paid=420.0,
+        ),
+    )
+
+    response = client.post(
+        "/locks/farelock/photon-purchase",
+        headers={"X-Photon-Internal-Secret": "photon-test-secret"},
+        json={"phone_number": "+15551234567", "query": "lock my flight"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["balance_cents"] == 8750
+    assert db.get(Lock, response.json()["id"]).user_id == user.id
+
+
+def test_photon_purchase_reports_shortfall_without_creating_a_lock(
+    client, db, mock_price, monkeypatch
+):
+    monkeypatch.setattr(settings, "photon_messaging_secret", "photon-test-secret")
+    user = _create_user(db, balance_cents=100)
+    user.phone_number = "+15551234567"
+    db.commit()
+    departure = date.today() + timedelta(days=10)
+    monkeypatch.setattr(
+        locks_router,
+        "parse_natural_farelock_quote",
+        lambda _query: SimpleNamespace(
+            origin="ATL", destination="LAX", departure_date=departure,
+            flight_number=None, fare_paid=420.0,
+        ),
+    )
+
+    response = client.post(
+        "/locks/farelock/photon-purchase",
+        headers={"X-Photon-Internal-Secret": "photon-test-secret"},
+        json={"phone_number": "+15551234567", "query": "lock my flight"},
+    )
+
+    assert response.status_code == 422
+    assert response.json()["detail"]["shortfall_cents"] == 1150
+    assert db.scalars(select(Lock)).all() == []

@@ -290,6 +290,12 @@ class FareLockPriceRequest(BaseModel):
     fare_cents: int = Field(gt=0)
 
 
+class PhotonFareLockPurchaseRequest(NaturalFareLockQuoteRequest):
+    """A trusted Photon request to buy a FareLock for an iMessage sender."""
+
+    phone_number: str = Field(min_length=8, max_length=20)
+
+
 class FareLockPriceResponse(BaseModel):
     origin: str
     destination: str

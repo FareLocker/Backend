@@ -4,7 +4,7 @@ from datetime import UTC, date, datetime
 from typing import Annotated, Literal
 from zoneinfo import ZoneInfo
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, status
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -16,18 +16,20 @@ from app.schemas import (
     FareLockPriceRequest,
     LockExerciseResponse,
     LockListResponse,
+    LockMarkToMarketResponse,
     LockPurchaseResponse,
     LockResponse,
     NaturalFareLockQuoteRequest,
-    LockMarkToMarketResponse,
+    PhotonFareLockPurchaseRequest,
 )
+from app.config import settings
 from app.services.locks import (
     ORIGIN_TIMEZONES,
     _compute_payout_dollars,
     _credit_payout,
     _provider_fare,
-    _stored_fare,
     _resolve_current_fare,
+    _stored_fare,
 )
 from app.services.natural_search import SearchParseError, parse_natural_farelock_quote
 from app.services.pricer import PAYOUT_CAP
@@ -78,6 +80,7 @@ def _purchase_farelock(
             "Wallet balance is too low to purchase this FareLock.",
             balance_cents=row.balance_cents,
             fee_cents=fee_cents,
+            shortfall_cents=fee_cents - row.balance_cents,
         )
 
     bought_at = datetime.now(UTC)
@@ -158,6 +161,45 @@ def purchase_farelock_structured(
 def purchase_farelock_natural(
     request: NaturalFareLockQuoteRequest, user: CurrentUser, db: DbSession
 ) -> LockPurchaseResponse:
+    try:
+        parsed = parse_natural_farelock_quote(request.query)
+    except SearchParseError as error:
+        raise _lock_error(error.code, error.message) from error
+
+    lock, row = _purchase_farelock(
+        user=user,
+        origin=parsed.origin,
+        destination=parsed.destination,
+        departure_date=parsed.departure_date,
+        flight_no=_normalize_flight_number(parsed.flight_number),
+        s0_dollars=parsed.fare_paid,
+        db=db,
+    )
+    return _to_purchase_response(lock, row)
+
+
+def _photon_user(phone_number: str, secret: str | None, db: Session) -> User:
+    """Resolve a Photon iMessage sender to its linked FareLocker account."""
+    if not settings.photon_messaging_secret or secret != settings.photon_messaging_secret:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Unauthorized")
+
+    user = db.scalar(select(User).where(User.phone_number == phone_number.strip()))
+    if user is None:
+        raise _lock_error(
+            "phone_not_linked",
+            "This phone number is not linked to a FareLocker account.",
+        )
+    return user
+
+
+@router.post("/farelock/photon-purchase", response_model=LockPurchaseResponse)
+def purchase_farelock_from_photon(
+    request: PhotonFareLockPurchaseRequest,
+    db: DbSession,
+    photon_secret: Annotated[str | None, Header(alias="X-Photon-Internal-Secret")] = None,
+) -> LockPurchaseResponse:
+    """Buy a FareLock for the verified sender of an inbound Photon message."""
+    user = _photon_user(request.phone_number, photon_secret, db)
     try:
         parsed = parse_natural_farelock_quote(request.query)
     except SearchParseError as error:

@@ -3,7 +3,9 @@ import { imessage } from "@spectrum-ts/imessage";
 import {
   fetchFareLockQuote,
   formatFareLockError,
+  formatFareLockPurchase,
   formatFareLockQuote,
+  purchaseFareLockFromPhoton,
 } from "./farelock";
 
 // Spectrum bridges a single agent loop to many messaging interfaces.
@@ -30,6 +32,8 @@ const welcomeGifPath = new URL(
 
 /** Shared Free/Pro lines often reject cold outbound until the user texts first. */
 const pendingWelcomes = new Map<string, { firstName: string; queuedAt: number }>();
+const pendingQuotes = new Map<string, { query: string; expiresAt: number }>();
+const quoteTtlMs = 5 * 60 * 1000;
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -283,11 +287,37 @@ for await (const [space, message] of app.messages) {
   await flushPendingWelcome(space, inboundPhone);
 
   if (message.content.type !== "text") continue;
-  const query = message.content.text;
+  const query = message.content.text.trim();
 
   await space.responding(async () => {
+    if (query.toUpperCase() === "LOCK") {
+      const pending = inboundPhone ? pendingQuotes.get(inboundPhone) : undefined;
+      if (!inboundPhone || !pending || pending.expiresAt <= Date.now()) {
+        if (inboundPhone) pendingQuotes.delete(inboundPhone);
+        await space.send(
+          "I don’t have an active FareLock quote. Send your flight details and fare to get one.",
+        );
+        return;
+      }
+
+      try {
+        const purchase = await purchaseFareLockFromPhoton(inboundPhone, pending.query);
+        pendingQuotes.delete(inboundPhone);
+        await space.send(formatFareLockPurchase(purchase));
+      } catch (error) {
+        await space.send(formatFareLockError(error));
+      }
+      return;
+    }
+
     try {
       const quote = await fetchFareLockQuote(query);
+      if (inboundPhone) {
+        pendingQuotes.set(inboundPhone, {
+          query,
+          expiresAt: Date.now() + quoteTtlMs,
+        });
+      }
       await space.send(formatFareLockQuote(quote));
     } catch (error) {
       await space.send(formatFareLockError(error));
