@@ -17,7 +17,10 @@ import type { PhotonLockRequest } from "./farelock";
  */
 
 const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
-const model = process.env.GEMINI_MODEL ?? "gemini-2.5-flash";
+// A "lite" model on purpose: replies in under a second per call, versus ~12s
+// for the full Flash models, which think at length before answering. Texting
+// needs speed far more than depth. Override with GEMINI_MODEL.
+const model = process.env.GEMINI_MODEL ?? "gemini-3.1-flash-lite";
 
 const apiUrl = process.env.FARELOCK_API_URL ?? "http://127.0.0.1:8000";
 const secret = process.env.PHOTON_INTERNAL_SECRET ?? process.env.PHOTON_MESSAGING_SECRET;
