@@ -25,6 +25,13 @@ const model = process.env.GEMINI_MODEL ?? "gemini-3.1-flash-lite";
 const apiUrl = process.env.FARELOCK_API_URL ?? "http://127.0.0.1:8000";
 const secret = process.env.PHOTON_INTERNAL_SECRET ?? process.env.PHOTON_MESSAGING_SECRET;
 
+// Fast, predictable defaults for text conversations. These stay in code so
+// every deployment behaves the same without extra environment configuration.
+const FLIGHT_SEARCH_CACHE_TTL_MS = 45_000;
+const FLIGHT_SEARCH_CACHE_MAX_ENTRIES = 200;
+const MAX_HISTORY_CONTENTS = 12;
+const MAX_AGENT_TOOL_LOOPS = 3;
+
 const instructions = () => `You are FareLocker's assistant, texting over iMessage.
 FareLocker sells FareLocks: after booking a flight, you pay a small fee, and if
 the fare drops before you fly, FareLocker pays you the difference (up to a limit).
@@ -111,6 +118,9 @@ export type AgentInput = {
 
 /** Calls the FareLocker API. Errors come back as { error } for Gemini to explain. */
 async function callApi(path: string, init: RequestInit = {}): Promise<any> {
+  const startedAt = Date.now();
+  const route = path.replace(/\/photon\/users\/[^/]+/, "/photon/users/:phone");
+  const method = init.method ?? "GET";
   try {
     const r = await fetch(new URL(path, apiUrl), {
       ...init,
@@ -118,6 +128,12 @@ async function callApi(path: string, init: RequestInit = {}): Promise<any> {
       signal: AbortSignal.timeout(30_000),
     });
     const body: any = await r.json().catch(() => undefined);
+    console.info("farelock.api.completed", {
+      route,
+      method,
+      status: r.status,
+      durationMs: Date.now() - startedAt,
+    });
     if (!r.ok) {
       const detail = body?.detail;
       const message =
@@ -125,7 +141,13 @@ async function callApi(path: string, init: RequestInit = {}): Promise<any> {
       return { error: message, code: detail?.code ?? null };
     }
     return body;
-  } catch {
+  } catch (error) {
+    console.warn("farelock.api.failed", {
+      route,
+      method,
+      durationMs: Date.now() - startedAt,
+      error: error instanceof Error ? error.name : "unknown",
+    });
     return { error: "FareLock API unreachable" };
   }
 }
@@ -164,15 +186,45 @@ async function quote(request: PhotonLockRequest) {
 const userHeaders = () => ({ "X-Photon-Internal-Secret": secret ?? "" });
 const notLinked = { error: "This number isn't linked to a FareLocker account." };
 
-const handlers: Record<string, (args: any, input: AgentInput) => Promise<unknown>> = {
-  search_flights: async (args) => {
+type CachedFlightSearch = { value: unknown; expiresAt: number };
+const flightSearchCache = new Map<string, CachedFlightSearch>();
+const flightSearchInFlight = new Map<string, Promise<unknown>>();
+
+const normalizeFlightSearch = (query: string) => query.trim().toLowerCase().replace(/\s+/g, " ");
+
+function cacheFlightSearch(key: string, value: unknown): void {
+  if (flightSearchCache.size >= FLIGHT_SEARCH_CACHE_MAX_ENTRIES) {
+    const oldestKey = flightSearchCache.keys().next().value;
+    if (oldestKey) flightSearchCache.delete(oldestKey);
+  }
+  flightSearchCache.set(key, { value, expiresAt: Date.now() + FLIGHT_SEARCH_CACHE_TTL_MS });
+}
+
+async function searchFlights(query: string): Promise<unknown> {
+  const key = normalizeFlightSearch(query);
+  const cached = flightSearchCache.get(key);
+  if (cached && cached.expiresAt > Date.now()) {
+    console.info("farelock.flight_search.cache_hit", { queryLength: key.length });
+    return cached.value;
+  }
+  if (cached) flightSearchCache.delete(key);
+
+  const pending = flightSearchInFlight.get(key);
+  if (pending) {
+    console.info("farelock.flight_search.in_flight_shared", { queryLength: key.length });
+    return pending;
+  }
+
+  console.info("farelock.flight_search.cache_miss", { queryLength: key.length });
+  const request = (async () => {
     const data = await callApi("/fares/search", {
       method: "POST",
-      body: JSON.stringify({ query: String(args.query ?? "") }),
+      body: JSON.stringify({ query }),
     });
     if (data.error) return data;
+
     // Just the cheapest few nonstops, so replies stay short.
-    return (data.results as any[])
+    const results = (data.results as any[])
       .filter((f) => f.stop_airports.length === 0)
       .sort((a, b) => a.fare_cents - b.fare_cents)
       .slice(0, 5)
@@ -183,6 +235,22 @@ const handlers: Record<string, (args: any, input: AgentInput) => Promise<unknown
         price_usd: dollars(f.fare_cents),
         farelock_fee_usd: f.lock ? dollars(f.lock.fee_cents) : null,
       }));
+
+    if (results.length > 0) cacheFlightSearch(key, results);
+    return results;
+  })();
+  flightSearchInFlight.set(key, request);
+
+  try {
+    return await request;
+  } finally {
+    if (flightSearchInFlight.get(key) === request) flightSearchInFlight.delete(key);
+  }
+}
+
+const handlers: Record<string, (args: any, input: AgentInput) => Promise<unknown>> = {
+  search_flights: async (args) => {
+    return searchFlights(String(args.query ?? ""));
   },
 
   get_farelock_quote: (args) => quote(lockRequest(args)),
@@ -228,19 +296,42 @@ const history = new Map<string, any[]>();
 export async function runAgent(input: AgentInput): Promise<string> {
   const contents = history.get(input.chatId) ?? [];
   contents.push({ role: "user", parts: [{ text: input.text }] });
+  const startedAt = Date.now();
+  let generations = 0;
+  let outcome = "failed";
 
   try {
-    for (let i = 0; i < 5; i++) {
-      const response = await ai.models.generateContent({
-        model,
-        contents,
-        config: { systemInstruction: instructions(), tools },
-      });
+    for (let i = 0; i < MAX_AGENT_TOOL_LOOPS; i++) {
+      const generationStartedAt = Date.now();
+      generations++;
+      let response;
+      try {
+        response = await ai.models.generateContent({
+          model,
+          contents,
+          config: { systemInstruction: instructions(), tools },
+        });
+      } catch (error) {
+        console.warn("farelock.gemini.failed", {
+          model,
+          loop: i + 1,
+          durationMs: Date.now() - generationStartedAt,
+          error: error instanceof Error ? error.name : "unknown",
+        });
+        throw error;
+      }
 
       const calls = response.functionCalls;
+      console.info("farelock.gemini.completed", {
+        model,
+        loop: i + 1,
+        durationMs: Date.now() - generationStartedAt,
+        functionCalls: calls?.length ?? 0,
+      });
       if (!calls?.length) {
         const reply = response.text ?? "Sorry, I didn't catch that.";
         contents.push({ role: "model", parts: [{ text: reply }] });
+        outcome = "reply";
         return reply;
       }
 
@@ -256,18 +347,26 @@ export async function runAgent(input: AgentInput): Promise<string> {
       );
       contents.push({ role: "user", parts });
     }
+    outcome = "tool_loop_limit";
+    console.warn("farelock.agent.tool_loop_limit", { model, loops: MAX_AGENT_TOOL_LOOPS });
     return "Sorry, that took too many steps. Try again?";
   } finally {
     history.set(input.chatId, trimHistory(contents));
+    console.info("farelock.agent.completed", {
+      model,
+      durationMs: Date.now() - startedAt,
+      generations,
+      outcome,
+    });
   }
 }
 
 /**
- * The last ~20 turns. Trimming must start at a plain user message: a history
+ * The last few content items. Trimming must start at a plain user message: a history
  * that begins mid tool call (a tool result with no request) is rejected.
  */
 function trimHistory(contents: any[]): any[] {
-  const recent = contents.slice(-20);
+  const recent = contents.slice(-MAX_HISTORY_CONTENTS);
   const start = recent.findIndex(
     (turn) => turn.role === "user" && turn.parts?.some((part: any) => "text" in part),
   );
