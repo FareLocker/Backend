@@ -42,11 +42,13 @@ def _price_farelock(
     flight_no: str | None,
     s0_dollars: float,
     db: Session,
+    strike_dollars: float | None = None,
 ) -> Quote:
     """Shared FareLock pricing: route/window checks + quote_lock."""
     origin = origin.upper()
     destination = destination.upper()
     route = (origin, destination)
+    strike = s0_dollars if strike_dollars is None else strike_dollars
 
     if route not in ROUTES:
         raise _quote_error(
@@ -72,6 +74,7 @@ def _price_farelock(
             flight_no=flight_no,
             _departure_date=departure_date,
             S0=s0_dollars,
+            K=strike,
             d0=protection_days,
             dow=departure_date.weekday(),
             db=db,
@@ -142,7 +145,8 @@ def farelock_price(
         destination=destination,
         departure_date=request.departure_date,
         flight_no=flight_no,
-        s0_dollars=strike_cents / 100.0,
+        s0_dollars=request.fare_cents / 100.0,
+        strike_dollars=strike_cents / 100.0,
         db=db,
     )
     return FareLockPriceResponse(

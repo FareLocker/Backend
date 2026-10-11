@@ -184,6 +184,32 @@ def test_purchase_structured_creates_lock_and_debits_wallet(
     assert kwargs["destination"] == "LAX"
     assert kwargs["flight_no"] == "DL123"
     assert kwargs["s0_dollars"] == 420.0
+    assert kwargs["strike_dollars"] == 420.0
+
+
+def test_purchase_structured_passes_custom_strike(client, db, mock_price):
+    mock_price.return_value = _fake_quote(fee=65.0, k=1000.0)
+    user = _create_user(db, balance_cents=100_000)
+    departure = date.today() + timedelta(days=10)
+    fare = _add_fare_snapshot(db, departure)
+
+    response = client.post(
+        "/locks/farelock/purchase",
+        headers=_auth_header(user),
+        json={
+            "fare_id": fare.id,
+            "expected_fee_cents": 6500,
+            "strike_cents": 100000,
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["strike_cents"] == 100000
+    assert mock_price.call_args.kwargs["s0_dollars"] == 420.0
+    assert mock_price.call_args.kwargs["strike_dollars"] == 1000.0
+    lock = db.get(Lock, response.json()["id"])
+    assert lock is not None
+    assert lock.K == 1000.0
 
 
 def test_purchase_natural_language(client, db, mock_price, monkeypatch):

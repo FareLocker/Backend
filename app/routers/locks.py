@@ -63,6 +63,7 @@ def _purchase_farelock(
     s0_dollars: float,
     db: Session,
     expected_fee_cents: int | None = None,
+    strike_dollars: float | None = None,
 ) -> tuple[Lock, User]:
     origin = origin.upper()
     destination = destination.upper()
@@ -92,6 +93,7 @@ def _purchase_farelock(
         departure_date=departure_date,
         flight_no=flight_no,
         s0_dollars=s0_dollars,
+        strike_dollars=strike_dollars,
         db=db,
     )
 
@@ -195,7 +197,8 @@ def purchase_farelock_structured(
         destination=fare.arrive.airport_code,
         departure_date=date.fromisoformat(fare.depart.local_time[:10]),
         flight_no=_normalize_flight_number(fare.flight_number),
-        s0_dollars=strike_cents / 100.0,
+        s0_dollars=fare.fare_cents / 100.0,
+        strike_dollars=strike_cents / 100.0,
         db=db,
         expected_fee_cents=request.expected_fee_cents,
     )
