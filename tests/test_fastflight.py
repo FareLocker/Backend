@@ -21,6 +21,7 @@ def provider(monkeypatch):  # noqa: ANN001
     get_flights = Mock(return_value=[{"id": "flight-1"}])
     monkeypatch.setattr(fastflight, "create_query", create_query)
     monkeypatch.setattr(fastflight, "get_flights", get_flights)
+    monkeypatch.setattr(fastflight.settings, "sim_flights_enabled", False)
     return query, create_query, get_flights
 
 

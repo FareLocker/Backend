@@ -3,6 +3,9 @@
 The provider call is intentionally isolated here so routers can remain focused on
 HTTP validation and tests can replace the upstream request without using the
 network.
+
+When ``settings.sim_flights_enabled`` is true, catalog ``XD*`` itineraries are
+merged into search results and price history never hits Google for those flights.
 """
 
 from datetime import date
@@ -19,6 +22,9 @@ from fast_flights import (
 from fast_flights import (
     get_price_history as _get_price_history,
 )
+
+from app.config import settings
+from app.services import sim_flights
 
 SeatClass = Literal["economy", "premium-economy", "business", "first"]
 
@@ -85,6 +91,20 @@ def search_flights(
         valid_flight_number = "".join(flight_number.upper().split())
         if not valid_flight_number or not valid_flight_number.isalnum():
             raise ValueError("Flight number must be alphanumeric and not empty")
+
+    sim_matches: list[object] = []
+    if settings.sim_flights_enabled:
+        sim_matches = list(
+            sim_flights.iter_itineraries(
+                origin=airport_from,
+                destination=airport_to,
+                departure_date=departure_date,
+                flight_number=valid_flight_number,
+            )
+        )
+        # Sim-only filter: skip Google entirely.
+        if valid_flight_number is not None and sim_flights.is_sim(valid_flight_number):
+            return ResultList(sim_matches)
 
     normalized_airlines = (
         [airline.strip().upper() for airline in airlines if airline.strip()]
@@ -155,33 +175,47 @@ def search_flights(
     )
 
     results = get_flights(query)
-    if valid_flight_number is None:
+    if valid_flight_number is not None:
+
+        def matches_flight_number(itinerary: object) -> bool:
+            for leg in getattr(itinerary, "flights", []):
+                numbers = [
+                    getattr(leg, "flight_number", ""),
+                    *getattr(leg, "codeshares", []),
+                ]
+                if any(
+                    "".join(number.upper().split()) == valid_flight_number
+                    for number in numbers
+                ):
+                    return True
+            return False
+
+        filtered = ResultList(
+            itinerary for itinerary in results if matches_flight_number(itinerary)
+        )
+        if hasattr(results, "metadata"):
+            filtered.metadata = results.metadata
+        results = filtered
+
+    if not sim_matches:
         return results
 
-    def matches_flight_number(itinerary: object) -> bool:
-        for leg in getattr(itinerary, "flights", []):
-            numbers = [
-                getattr(leg, "flight_number", ""),
-                *getattr(leg, "codeshares", []),
-            ]
-            if any(
-                "".join(number.upper().split()) == valid_flight_number
-                for number in numbers
-            ):
-                return True
-        return False
-
-    filtered = ResultList(
-        itinerary for itinerary in results if matches_flight_number(itinerary)
-    )
+    merged = ResultList([*results, *sim_matches])
     if hasattr(results, "metadata"):
-        filtered.metadata = results.metadata
-    return filtered
+        merged.metadata = results.metadata
+    return merged
 
 
 def fetch_price_history(
     *, flight_number: str, departure_date: date, origin: str, destination: str
 ):
+    if settings.sim_flights_enabled and sim_flights.is_sim(flight_number):
+        return sim_flights.history_insights(
+            flight_number,
+            origin=origin,
+            destination=destination,
+            departure_date=departure_date,
+        )
     return _get_price_history(
         flight_number,
         departure_date.isoformat(),

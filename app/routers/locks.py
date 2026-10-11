@@ -25,8 +25,6 @@ from app.services.locks import (
     ORIGIN_TIMEZONES,
     _compute_payout_dollars,
     _credit_payout,
-    _provider_fare,
-    _stored_fare,
     _resolve_current_fare,
 )
 from app.services.natural_search import SearchParseError, parse_natural_farelock_quote
@@ -278,27 +276,15 @@ def _early_exercise_lock(
             status=lock.status,
         )
 
-    origin = lock.route.split("-")[0]
     now = datetime.now(UTC)
-    local_today = now.astimezone(ZoneInfo(ORIGIN_TIMEZONES.get(origin, "UTC"))).date()
-    if local_today >= lock.departure_date:
+    if not _exercisable_now(lock, now=now):
         raise _lock_error(
             "past_exercise_window",
             "Early exercise is only available before the departure date.",
             departure_date=lock.departure_date.isoformat(),
         )
 
-    try:
-        settle_fare = _provider_fare(lock)
-    except Exception as error:
-        raise HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY,
-            detail="Could not fetch current fare for this lock",
-        ) from error
-
-    if settle_fare is None:
-        settle_fare = _stored_fare(lock, db)
-
+    settle_fare, _source = _resolve_current_fare(lock, db)
     if settle_fare is None:
         raise _lock_error(
             "fare_unavailable",

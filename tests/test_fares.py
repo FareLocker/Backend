@@ -125,6 +125,44 @@ def test_fare_detail_uses_google_price_history_when_available(
     ]
 
 
+def test_fare_detail_refreshes_live_sim_fare_cents(monkeypatch: pytest.MonkeyPatch):
+    db = session()
+    departure = date.today() + __import__("datetime").timedelta(days=10)
+    fare = fares.FareSearchResultResponse(
+        id=fare_id("ATL", "LAX", departure, "XD101"),
+        airline_name="FareLocker Demo Air",
+        flight_number="XD101",
+        cabin_class="Economy",
+        stop_airports=[],
+        depart=fares.FareEndpointResponse(
+            airport_code="ATL",
+            airport_name="Atlanta",
+            city="ATL",
+            local_time=f"{departure.isoformat()}T09:15",
+        ),
+        arrive=fares.FareEndpointResponse(
+            airport_code="LAX",
+            airport_name="Los Angeles",
+            city="LAX",
+            local_time=f"{departure.isoformat()}T13:50",
+        ),
+        duration_minutes=275,
+        fare_cents=1,  # stale snapshot
+        lock=None,
+        trend=fares.FareTrendResponse(points_cents=[], change_percent=0),
+        source="sim",
+    )
+    db.add(FareSnapshot(id=fare.id, payload=fare.model_dump()))
+    db.commit()
+    monkeypatch.setattr(fares.sim_flights, "price_at", lambda _fn, **_kw: 211.0)
+
+    response = fares.get_fare_detail(fare.id, db)
+
+    assert response.history_source == "sim"
+    assert response.fare.fare_cents == 21100
+    assert response.fare.source == "sim"
+
+
 def test_fare_detail_falls_back_to_local_history_when_google_is_unavailable(
     monkeypatch: pytest.MonkeyPatch,
 ):

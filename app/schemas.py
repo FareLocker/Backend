@@ -32,7 +32,7 @@ class FareHistoryPoint(BaseModel):
 class FareDetailResponse(BaseModel):
     fare: "FareSearchResultResponse"
     history: list[FareHistoryPoint]
-    history_source: Literal["google", "local"]
+    history_source: Literal["google", "local", "sim"]
 
 
 class FareEndpointResponse(BaseModel):
@@ -63,6 +63,7 @@ class FareSearchResultResponse(BaseModel):
     fare_cents: int
     lock: FareLockQuoteSummary | None
     trend: FareTrendResponse
+    source: Literal["google", "sim"] = "google"
 
 
 class FareSearchResponse(BaseModel):
@@ -381,5 +382,5 @@ class LockMarkToMarketResponse(BaseModel):
     max_payout_cents: int
     in_the_money: bool | None
     exercisable: bool
-    fare_source: Literal["provider", "stored"] | None
+    fare_source: Literal["provider", "stored", "sim"] | None
     currency: Literal["USD"] = "USD"

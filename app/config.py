@@ -32,6 +32,9 @@ class Settings(BaseSettings):
     fares_csv: str = "data/fares.csv"
     scraper_sleep_seconds: float = 2.0
 
+    # Demo XD* flights merged into search (off in prod if desired)
+    sim_flights_enabled: bool = True
+
     model_config = {"env_file": ".env", "extra": "ignore"}
 
     @computed_field

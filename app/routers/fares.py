@@ -23,6 +23,7 @@ from app.schemas import (
     GooglePriceHistoryResponse,
     NaturalFlightSearchRequest,
 )
+from app.services import sim_flights
 from app.services.fastflight import fetch_price_history, search_flights
 from app.services.natural_search import SearchParseError, parse_natural_search
 from app.services.pricer import quote_lock
@@ -177,6 +178,11 @@ def _normalize_itinerary(
         departure=departure,
         flight_no=flight_no,
     )
+    source = (
+        "sim"
+        if getattr(itinerary, "is_sim", False) or sim_flights.is_sim(flight_no)
+        else "google"
+    )
     return FareSearchResultResponse(
         id=fare_id(origin, destination, departure, flight_no),
         airline_name=", ".join(getattr(itinerary, "airlines", []) or [])
@@ -205,6 +211,7 @@ def _normalize_itinerary(
             price=float(price),
         ),
         trend=_trend(history),
+        source=source,
     )
 
 
@@ -325,6 +332,46 @@ def get_fare_detail(fare_key: str, db: DbSession) -> FareDetailResponse:
         departure=departure,
         flight_no=flight_no,
     )
+    if sim_flights.is_sim(flight_no):
+        try:
+            sim_history = _google_history(
+                fetch_price_history(
+                    flight_number=fare.flight_number,
+                    departure_date=departure,
+                    origin=origin,
+                    destination=destination,
+                )
+            )
+        except Exception:
+            sim_history = []
+
+        # Snapshot fare_cents is frozen at search time; refresh so FE polls see movement.
+        try:
+            live_price = sim_flights.price_at(flight_no)
+            fare = fare.model_copy(
+                update={
+                    "fare_cents": round(live_price * 100),
+                    "lock": _lock_quote(
+                        db,
+                        origin=origin,
+                        destination=destination,
+                        departure=departure,
+                        flight_no=flight_no,
+                        price=live_price,
+                    ),
+                    "trend": _trend(sim_history) if sim_history else fare.trend,
+                    "source": "sim",
+                }
+            )
+        except Exception:
+            pass
+
+        return FareDetailResponse(
+            fare=fare,
+            history=sim_history or local_history,
+            history_source="sim" if sim_history else "local",
+        )
+
     try:
         google_history = _google_history(
             fetch_price_history(
